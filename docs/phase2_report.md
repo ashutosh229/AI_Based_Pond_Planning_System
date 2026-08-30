@@ -7,8 +7,11 @@
 ## 2. Working API Route
 
 [Docs](http://localhost:8001/docs)
+<br>
 [Healthcheck API Route](http://localhost:8001/docs#/default/health_check_health_get)
+<br>
 [Contour Analysis API Route](http://localhost:8001/docs#/contour-analysis/analyze_contour_api_analyzeContour_post)
+<br>
 
 Run locally with:
 
