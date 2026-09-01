@@ -1,8 +1,10 @@
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL;
+
 export async function analyzeContour(file) {
   const formData = new FormData();
   formData.append("file", file);
 
-  const res = await fetch("/api/analyzeContour", {
+  const res = await fetch(`${API_BASE_URL}/api/analyzeContour`, {
     method: "POST",
     body: formData,
   });
