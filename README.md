@@ -3,7 +3,9 @@
 A geospatial decision-support tool for identifying and sizing rainwater-harvesting ponds in rural/hilly terrain. Given a contour map of a village, the system finds natural depressions (basins) suitable for a pond, delineates each basin's catchment area from contour topology, and (via the Phase 1 core modules) can turn a catchment area + rainfall record into a recommended pond depth and feasibility verdict.
 
 **Repository:** https://github.com/ashutosh229/AI_Based_Pond_Planning_System
+<br>
 **License:** MIT (see [`LICENSE`](LICENSE))
+<br>
 **Author:** Ashutosh Kumar Jha
 
 Full Phase 2 write-up (approach, algorithm walkthrough, demonstration output): [`docs/phase2_report.md`](docs/phase2_report.md)
