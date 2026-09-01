@@ -142,6 +142,7 @@ curl -X POST "http://10.1.75.79:3205/api/analyzeContour" \
 ```
 
 Interactive docs (deployed instance): `http://10.1.75.79:3205/docs`
+<br>
 Local docs: replace the host/port above with wherever you started Uvicorn.
 
 > Both `10.1.75.79:3205` URLs referenced throughout this README and `docs/phase2_report.md` are the currently deployed instance used for grading/demo. Swap in `localhost:<port>` for local development.
