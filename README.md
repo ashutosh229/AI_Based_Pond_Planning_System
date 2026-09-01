@@ -50,34 +50,9 @@ Villages in hilly terrain often need small check-dams or farm ponds to capture m
 
 ## Architecture
 
-```
-                       ┌─────────────────────────────┐
-                       │   Frontend (React + Vite)   │
-                       │  Upload → Map → Basin List   │
-                       └──────────────┬───────────────┘
-                                      │ multipart/form-data
-                                      ▼
-                       ┌─────────────────────────────┐
-                       │   FastAPI app (app/main.py)  │
-                       │   CORS-open, single router   │
-                       └──────────────┬───────────────┘
-                                      │
-                        api/contour.py (thin route handler)
-                                      │
-              ┌───────────────────────┴───────────────────────┐
-              ▼                                                ▼
-   core/kml_parser.py                             core/contour_basin_analyzer.py
-   KML/KMZ → ContourLine[]                          Containment tree → Basin[]
-   (elevation + point ring, closed/open)             (basin vs. hill, catchment walk-up)
-                                                                │
-                                                                ▼
-                                                    schemas.py → ContourAnalysisResult
-                                                    (JSON response, GeoJSON boundaries)
-
-   ── not yet wired into an API route, used as a library today ──
-   core/runoff.py (RunoffCalculator)  ─┐
-   core/pond_sizing.py (PondSizer)     ├─ compose: catchment_area_m2 → runoff volume → recommended depth
-```
+<p align="center">
+  <img src="docs/village_pond_architecture.svg" alt="System Architecture" width="900">
+</p>
 
 The layering is intentionally strict: `api/` contains only route handlers, all algorithmic logic lives in `core/`, and request/response contracts live in `schemas.py`. This keeps the analysis logic unit-testable without spinning up FastAPI or touching HTTP at all.
 
