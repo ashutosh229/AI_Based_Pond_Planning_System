@@ -6,11 +6,11 @@
 
 ## 2. Working API Route
 
-[Docs](http://localhost:8001/docs)
+[Docs](http://10.1.75.79:3205/docs)
 <br>
-[Healthcheck API Route](http://localhost:8001/docs#/default/health_check_health_get)
+[Healthcheck API Route](http://10.1.75.79:3205/docs#/default/health_check_health_get)
 <br>
-[Contour Analysis API Route](http://localhost:8001/docs#/contour-analysis/analyze_contour_api_analyzeContour_post)
+[Contour Analysis API Route](http://10.1.75.79:3205/docs#/contour-analysis/analyze_contour_api_analyzeContour_post)
 <br>
 
 Run locally with:
@@ -84,7 +84,7 @@ Run against `data/sample_contours/contours_1m.kml`:
 Sample request (curl):
 
 ```bash
-curl -X POST "http://localhost:8001/api/analyzeContour" \
+curl -X POST "http://10.1.75.79:3205/api/analyzeContour" \
   -F "file=@data/sample_contours/contours_1m.kml"
 ```
 
