@@ -63,9 +63,7 @@ def _to_response(
 
 @router.post("/analyzeContour", response_model=ContourAnalysisResult)
 async def analyze_contour(
-    contour_map: UploadFile = File(
-        ..., description="Contour map in KML or KMZ format", alias="file"
-    ),
+    contour_map: UploadFile = File(..., description="Contour map in KML or KMZ format"),
     analyzer: ContourBasinAnalyzer = Depends(get_basin_analyzer),
 ):
     if not contour_map.filename or not contour_map.filename.lower().endswith(
