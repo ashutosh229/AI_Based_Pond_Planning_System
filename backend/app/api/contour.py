@@ -8,14 +8,18 @@ from app.schemas import BasinCandidate, ContourAnalysisResult, Coordinates
 router = APIRouter(prefix="/api", tags=["contour-analysis"])
 
 ALLOWED_EXTENSIONS = (".kml", ".kmz")
-MAX_UPLOAD_BYTES = 25 * 1024 * 1024  # 25 MB — generous for a village-scale contour export
+MAX_UPLOAD_BYTES = (
+    25 * 1024 * 1024
+)  # 25 MB — generous for a village-scale contour export
 
 
 def get_basin_analyzer() -> ContourBasinAnalyzer:
     return ContourBasinAnalyzer(min_basin_depth_m=settings.min_basin_depth_m)
 
 
-def _to_response(filename: str, outcome: ContourAnalysisOutcome) -> ContourAnalysisResult:
+def _to_response(
+    filename: str, outcome: ContourAnalysisOutcome
+) -> ContourAnalysisResult:
     def to_candidate(rank: int, basin) -> BasinCandidate:
         return BasinCandidate(
             rank=rank,
@@ -59,29 +63,35 @@ def _to_response(filename: str, outcome: ContourAnalysisOutcome) -> ContourAnaly
 
 @router.post("/analyzeContour", response_model=ContourAnalysisResult)
 async def analyze_contour(
-    file: UploadFile = File(..., description="Contour map in KML or KMZ format"),
+    contour_map: UploadFile = File(
+        ..., description="Contour map in KML or KMZ format", alias="file"
+    ),
     analyzer: ContourBasinAnalyzer = Depends(get_basin_analyzer),
 ):
-    if not file.filename or not file.filename.lower().endswith(ALLOWED_EXTENSIONS):
+    if not contour_map.filename or not contour_map.filename.lower().endswith(
+        ALLOWED_EXTENSIONS
+    ):
         raise HTTPException(status_code=400, detail="File must be a .kml or .kmz")
 
-    raw = await file.read()
+    raw = await contour_map.read()
     if len(raw) > MAX_UPLOAD_BYTES:
         raise HTTPException(status_code=413, detail="File too large (max 25 MB)")
 
     try:
-        contours = parse_contours(raw, file.filename)
+        contours = parse_contours(raw, contour_map.filename)
     except KMLParseError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     outcome = analyzer.analyze(contours)
-    return _to_response(file.filename, outcome)
+    return _to_response(contour_map.filename, outcome)
 
 
 # Alias per the assignment's alternate suggested route name.
-@router.post("/findCatchment", response_model=ContourAnalysisResult, include_in_schema=False)
+@router.post(
+    "/findCatchment", response_model=ContourAnalysisResult, include_in_schema=False
+)
 async def find_catchment(
-    file: UploadFile = File(...),
+    contour_map: UploadFile = File(...),
     analyzer: ContourBasinAnalyzer = Depends(get_basin_analyzer),
 ):
-    return await analyze_contour(file, analyzer)
+    return await analyze_contour(contour_map, analyzer)
