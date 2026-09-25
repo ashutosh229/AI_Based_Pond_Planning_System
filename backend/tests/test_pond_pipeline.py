@@ -1,0 +1,120 @@
+import pytest
+
+from app.core.contour_basin_analyzer import ContourBasinAnalyzer
+from app.core.kml_parser import parse_contours
+from app.core.pond_pipeline import Timer, run_pond_pipeline
+from app.core.rainfall_service import RainfallLookupError, RainfallStats
+
+
+class _FakeRainfallService:
+    """Stands in for RainfallService so the pipeline test doesn't touch
+    the network; returns a fixed rainfall figure."""
+
+    async def get_annual_rainfall_m(self, lat, lon):
+        return RainfallStats(annual_avg_m=1.2, years_used=10, source="fake-source")
+
+
+class _FailingRainfallService:
+    async def get_annual_rainfall_m(self, lat, lon):
+        raise RainfallLookupError("simulated outage")
+
+
+def _square_ring(cx, cy, half_size):
+    return [
+        (cx - half_size, cy - half_size),
+        (cx + half_size, cy - half_size),
+        (cx + half_size, cy + half_size),
+        (cx - half_size, cy + half_size),
+        (cx - half_size, cy - half_size),
+    ]
+
+
+def _placemark_kml(elevation, points):
+    coords_text = " ".join(f"{lon},{lat}" for lon, lat in points)
+    return (
+        f"<Placemark><name>{elevation}</name>"
+        f"<LineString><coordinates>{coords_text}</coordinates></LineString></Placemark>"
+    )
+
+
+def _wrap_kml(placemarks_xml: str) -> bytes:
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<kml xmlns="http://www.opengis.net/kml/2.2"><Document>'
+        f"{placemarks_xml}</Document></kml>"
+    ).encode("utf-8")
+
+
+# Same nested-basin fixture as test_contour_analysis.py: three concentric
+# squares, elevation decreasing inward (110m -> 105m -> 100m pit).
+NESTED_BASIN_KML = _wrap_kml(
+    _placemark_kml(110, _square_ring(0, 0, 30))
+    + _placemark_kml(105, _square_ring(0, 0, 20))
+    + _placemark_kml(100, _square_ring(0, 0, 10))
+)
+
+
+@pytest.mark.anyio
+async def test_pipeline_composes_basin_analysis_with_pond_sizing():
+    contours = parse_contours(NESTED_BASIN_KML, "test.kml")
+    analyzer = ContourBasinAnalyzer(min_basin_depth_m=1.0)
+    timer = Timer()
+
+    result = await run_pond_pipeline(
+        contours,
+        source_label="test.kml",
+        analyzer=analyzer,
+        rainfall_service=_FakeRainfallService(),
+        timer=timer,
+    )
+
+    assert result.recommended_site is not None
+    assert result.pond_recommendation is not None
+    assert result.pond_recommendation.annual_rainfall_m == 1.2
+    assert result.pond_recommendation.rainfall_years_used == 10
+    assert result.pond_recommendation.recommended_depth_m > 0
+
+    # Every step should have been timed.
+    assert "basin_analysis_ms" in result.timings_ms
+    assert "rainfall_lookup_ms" in result.timings_ms
+    assert "pond_sizing_ms" in result.timings_ms
+
+
+@pytest.mark.anyio
+async def test_pipeline_degrades_gracefully_when_rainfall_lookup_fails():
+    contours = parse_contours(NESTED_BASIN_KML, "test.kml")
+    analyzer = ContourBasinAnalyzer(min_basin_depth_m=1.0)
+    timer = Timer()
+
+    result = await run_pond_pipeline(
+        contours,
+        source_label="test.kml",
+        analyzer=analyzer,
+        rainfall_service=_FailingRainfallService(),
+        timer=timer,
+    )
+
+    # Basin/catchment info should still come through even if rainfall fails.
+    assert result.recommended_site is not None
+    assert result.pond_recommendation is None
+    assert "simulated outage" in result.notes
+
+
+@pytest.mark.anyio
+async def test_pipeline_skips_rainfall_lookup_when_no_basin_found():
+    # min_basin_depth_m of 20 filters out the 10m-deep nested basin entirely.
+    contours = parse_contours(NESTED_BASIN_KML, "test.kml")
+    analyzer = ContourBasinAnalyzer(min_basin_depth_m=20.0)
+    timer = Timer()
+
+    result = await run_pond_pipeline(
+        contours,
+        source_label="test.kml",
+        analyzer=analyzer,
+        rainfall_service=_FakeRainfallService(),
+        timer=timer,
+    )
+
+    assert result.recommended_site is None
+    assert result.pond_recommendation is None
+    assert "rainfall_lookup_ms" not in result.timings_ms
