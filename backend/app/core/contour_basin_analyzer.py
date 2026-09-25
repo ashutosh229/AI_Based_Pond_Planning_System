@@ -1,12 +1,10 @@
 from dataclasses import dataclass
 
-from pyproj import Geod
 from shapely.geometry import Polygon, mapping
 from shapely.strtree import STRtree
 
+from app.core.geo_utils import geodesic_polygon_area_m2
 from app.core.kml_parser import ContourLine
-
-_GEOD = Geod(ellps="WGS84")
 
 
 @dataclass(frozen=True)
@@ -31,12 +29,8 @@ class ContourAnalysisOutcome:
 
 
 def _geodesic_area_m2(polygon: Polygon) -> float:
-    """Accurate area on the WGS84 ellipsoid — avoids the distortion of
-    computing area directly from lon/lat degrees, and avoids having to
-    guess a UTM zone for projection."""
     lons, lats = zip(*polygon.exterior.coords)
-    area, _ = _GEOD.polygon_area_perimeter(lons, lats)
-    return abs(area)
+    return geodesic_polygon_area_m2(list(lons), list(lats))
 
 
 def _detect_contour_interval(elevations: list[float]) -> float:
