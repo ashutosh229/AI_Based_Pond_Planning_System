@@ -1,4 +1,5 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
+import L from "leaflet";
 import {
   MapContainer,
   TileLayer,
@@ -7,6 +8,8 @@ import {
   Popup,
   useMap,
 } from "react-leaflet";
+import "@geoman-io/leaflet-geoman-free/dist/leaflet-geoman.css";
+import "@geoman-io/leaflet-geoman-free";
 
 const COLORS = [
   "#38bdf8", // rank 1
@@ -30,7 +33,72 @@ function FitBounds({ geojsons }) {
   return null;
 }
 
-export default function MapView({ sites, selectedSite, onSelectSite }) {
+/**
+ * Wires up Leaflet-Geoman's polygon draw tool (freehand-drag or
+ * click-to-place, both built in) and reports the drawn ring back to the
+ * parent as [[lon, lat], ...]. The draft shape stays on the map (dashed)
+ * until `resetSignal` changes, so the user can see what they drew while
+ * waiting on the analysis request.
+ */
+function DrawAreaControl({ onAreaDrawn, resetSignal }) {
+  const map = useMap();
+  const draftLayerRef = useRef(null);
+
+  useEffect(() => {
+    if (!map.pm) return;
+    map.pm.addControls({
+      position: "topleft",
+      drawMarker: false,
+      drawCircleMarker: false,
+      drawPolyline: false,
+      drawRectangle: false,
+      drawCircle: false,
+      drawText: false,
+      editMode: true,
+      dragMode: false,
+      cutPolygon: false,
+      removalMode: true,
+      drawPolygon: true,
+    });
+    return () => map.pm.removeControls();
+  }, [map]);
+
+  useEffect(() => {
+    if (!map.pm) return;
+
+    const handleCreate = (e) => {
+      if (draftLayerRef.current && map.hasLayer(draftLayerRef.current)) {
+        map.removeLayer(draftLayerRef.current);
+      }
+      const latlngs = e.layer.getLatLngs()[0];
+      const ring = latlngs.map((ll) => [ll.lng, ll.lat]);
+      e.layer.setStyle?.({ color: "#facc15", dashArray: "6 6", fillOpacity: 0.05 });
+      draftLayerRef.current = e.layer;
+      onAreaDrawn(ring);
+    };
+
+    map.on("pm:create", handleCreate);
+    return () => map.off("pm:create", handleCreate);
+  }, [map, onAreaDrawn]);
+
+  useEffect(() => {
+    if (draftLayerRef.current && map.hasLayer(draftLayerRef.current)) {
+      map.removeLayer(draftLayerRef.current);
+    }
+    draftLayerRef.current = null;
+  }, [resetSignal, map]);
+
+  return null;
+}
+
+export default function MapView({
+  sites,
+  selectedSite,
+  onSelectSite,
+  drawEnabled = false,
+  onAreaDrawn,
+  resetSignal,
+}) {
   const geojsons = useMemo(
     () => sites.map((s) => s.catchment_boundary_geojson).filter(Boolean),
     [sites],
@@ -49,7 +117,9 @@ export default function MapView({ sites, selectedSite, onSelectSite }) {
         flexDirection: "column",
       }}
     >
-      <h2 style={{ padding: "1rem 1.25rem 0" }}>Catchment Map</h2>
+      <h2 style={{ padding: "1rem 1.25rem 0" }}>
+        {drawEnabled ? "Draw an Area · Catchment Map" : "Catchment Map"}
+      </h2>
       <MapContainer
         center={center}
         zoom={13}
@@ -62,6 +132,10 @@ export default function MapView({ sites, selectedSite, onSelectSite }) {
         />
 
         <FitBounds geojsons={geojsons} />
+
+        {drawEnabled && (
+          <DrawAreaControl onAreaDrawn={onAreaDrawn} resetSignal={resetSignal} />
+        )}
 
         {sites.map((site) => {
           const color = COLORS[(site.rank - 1) % COLORS.length];
@@ -111,17 +185,17 @@ export default function MapView({ sites, selectedSite, onSelectSite }) {
         })}
       </MapContainer>
 
-      <div className="legend">
-        {sites.slice(0, 6).map((s) => (
-          <div key={s.rank} style={{ marginBottom: 2 }}>
-            <span
-              style={{ background: COLORS[(s.rank - 1) % COLORS.length] }}
-            />
-            Rank {s.rank}
-            {s.rank === 1 ? " (recommended)" : ""}
-          </div>
-        ))}
-      </div>
+      {sites.length > 0 && (
+        <div className="legend">
+          {sites.slice(0, 6).map((s) => (
+            <div key={s.rank} style={{ marginBottom: 2 }}>
+              <span style={{ background: COLORS[(s.rank - 1) % COLORS.length] }} />
+              Rank {s.rank}
+              {s.rank === 1 ? " (recommended)" : ""}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
