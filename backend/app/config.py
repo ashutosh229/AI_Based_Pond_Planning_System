@@ -19,17 +19,26 @@ class Settings(BaseSettings):
     min_basin_depth_m: float = 2.0
 
     # --- Phase 3: freeform area selection (elevation sampling + rainfall) ---
-    # Regular grid resolution used when sampling elevation over a user-drawn
-    # area. Bounds both accuracy (denser grid = better contours) and cost
-    # (each point is a remote elevation-API call, batched and rate-limited).
-    area_max_grid_points: int = 256
+    # Target ground spacing between elevation samples. 30m matches
+    # OpenTopoData's SRTM30m source resolution — sampling denser than
+    # this doesn't add real information. Grid size is derived from this
+    # + the drawn area's actual extent (see area_contour_builder.estimate_grid_side),
+    # not from a fixed point count, so resolution scales with area
+    # automatically instead of degrading silently.
+    area_target_spacing_m: float = 30.0
     area_grid_min_side: int = 9
-    area_grid_max_side: int = 20
+    area_grid_max_side: int = 80
+    # Hard ceiling on total sampled points, regardless of area size —
+    # this is what actually bounds elevation-fetch cost/latency. A very
+    # large drawn area still gets analyzed, just at coarser-than-target
+    # spacing once this cap is hit (reported in the response notes).
+    area_max_grid_points: int = 1024
     # Target number of contour levels extracted from the sampled DEM grid.
     area_contour_levels: int = 15
-    # Drawn-area size guardrails: too large and the fixed grid gets too
-    # coarse to find a real basin; too small and there's nothing to sample.
-    area_max_size_km2: float = 5.0
+    # Sanity backstop only (typo/abuse guard, e.g. someone drawing a
+    # whole district by accident) — NOT a resolution limit anymore,
+    # since resolution now self-adjusts via area_max_grid_points above.
+    area_max_size_km2: float = 500.0
     area_min_size_m2: float = 500.0
     # OpenTopoData's public instance allows ~100 locations/request and
     # ~1 request/sec; these are respected by ElevationService.
