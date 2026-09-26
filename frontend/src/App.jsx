@@ -69,7 +69,7 @@ export default function App() {
       <header className="header">
         <h1>Village Pond Planning System</h1>
         <p className="subtitle">
-          Draw an area or upload a contour map — get a suggested pond site, its
+4          Draw an area or upload a contour map — get a suggested pond site, its
           catchment, and the expected water volume.
         </p>
       </header>
