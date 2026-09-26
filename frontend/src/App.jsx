@@ -69,8 +69,8 @@ export default function App() {
       <header className="header">
         <h1>Village Pond Planning System</h1>
         <p className="subtitle">
-          Draw an area or upload a contour map — get a suggested pond site,
-          its catchment, and the expected water volume.
+          Draw an area or upload a contour map — get a suggested pond site, its
+          catchment, and the expected water volume.
         </p>
       </header>
 
@@ -99,8 +99,8 @@ export default function App() {
               <p className="notes">
                 Use the polygon tool in the top-left of the map to draw (or
                 freehand-drag) the area you want analyzed, then run the
-                analysis. Areas over a few km² are rejected — draw something
-                village-scale, not district-scale.
+                analysis. Larger areas are sampled at coarser resolution
+                automatically.
               </p>
               <button
                 type="button"
@@ -127,7 +127,9 @@ export default function App() {
 
             {result.pond_recommendation && (
               <section className="panel">
-                <PondRecommendationCard recommendation={result.pond_recommendation} />
+                <PondRecommendationCard
+                  recommendation={result.pond_recommendation}
+                />
               </section>
             )}
 
