@@ -11,12 +11,42 @@ map the resulting pixel (row, col) paths back to (lon, lat).
 from dataclasses import dataclass
 
 import numpy as np
+import math
 from scipy.interpolate import griddata
 from skimage import measure
 
 from app.core.kml_parser import ContourLine
 
 _NICE_STEPS = (0.5, 1, 2, 2.5, 5, 10, 20, 25, 50, 100, 200, 500)
+
+_EARTH_M_PER_DEGREE_LAT = 111_320.0
+
+
+def estimate_grid_side(
+    min_lat: float,
+    min_lon: float,
+    max_lat: float,
+    max_lon: float,
+    target_spacing_m: float,
+    min_side: int,
+    max_side: int,
+    hard_max_points: int,
+) -> int:
+    """Picks a square grid side length so points land roughly
+    `target_spacing_m` apart on the ground for this area's actual
+    extent, clamped to [min_side, max_side] and to a hard cap on total
+    points. This is what makes resolution scale with area automatically
+    instead of a fixed grid size degrading silently for large areas."""
+    mean_lat_rad = math.radians((min_lat + max_lat) / 2)
+    lat_span_m = (max_lat - min_lat) * _EARTH_M_PER_DEGREE_LAT
+    lon_span_m = (max_lon - min_lon) * _EARTH_M_PER_DEGREE_LAT * math.cos(mean_lat_rad)
+    span_m = max(lat_span_m, lon_span_m, 1.0)
+
+    desired_side = round(span_m / target_spacing_m)
+    side = max(min_side, min(max_side, desired_side))
+
+    hard_cap_side = int(math.sqrt(hard_max_points))
+    return max(min_side, min(side, hard_cap_side))
 
 
 class TerrainTooFlatError(ValueError):
@@ -75,13 +105,18 @@ def fill_elevation_grid(grid: SampleGrid, elevations: list[float | None]) -> np.
         lat_lon_pairs = np.array(grid.points)
         valid_mask = ~np.isnan(values)
         values = griddata(
-            lat_lon_pairs[valid_mask], values[valid_mask], lat_lon_pairs, method="nearest"
+            lat_lon_pairs[valid_mask],
+            values[valid_mask],
+            lat_lon_pairs,
+            method="nearest",
         )
 
     return values.reshape(n_lat, n_lon)
 
 
-def _choose_contour_interval(elev_min: float, elev_max: float, target_levels: int) -> float:
+def _choose_contour_interval(
+    elev_min: float, elev_max: float, target_levels: int
+) -> float:
     span = elev_max - elev_min
     if span < 0.5:
         raise TerrainTooFlatError(
@@ -118,12 +153,19 @@ def build_contours_from_grid(
                 continue
             rows, cols = path[:, 0], path[:, 1]
             touches_border = (
-                rows.min() <= 0 or rows.max() >= n_lat - 1 or cols.min() <= 0 or cols.max() >= n_lon - 1
+                rows.min() <= 0
+                or rows.max() >= n_lat - 1
+                or cols.min() <= 0
+                or cols.max() >= n_lon - 1
             )
             is_closed = (not touches_border) and bool(np.allclose(path[0], path[-1]))
 
             points = [to_lonlat(r, c) for r, c in path]
-            contours.append(ContourLine(elevation=round(level, 3), points=points, is_closed=is_closed))
+            contours.append(
+                ContourLine(
+                    elevation=round(level, 3), points=points, is_closed=is_closed
+                )
+            )
         level += interval
 
     return contours, interval
