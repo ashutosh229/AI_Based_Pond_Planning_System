@@ -10,8 +10,6 @@ services:
     restart: unless-stopped
     environment:
       APP_PORT: "3000"
-      # db-server is a sibling container on the same compose network —
-      # reached by its service name, not localhost or any global URL.
       DB_SERVER_BASE_URL: "http://db-server:4000"
     ports:
       - "${LOCAL_BACKEND_PORT}:3000"
@@ -53,6 +51,33 @@ services:
         limits:
           cpus: "0.5"
           memory: 256M
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        # Points at the locally-running backend container's mapped port —
+        # this is the browser-facing URL, so it must be a reachable host
+        # port, not the internal service name.
+        VITE_API_BASE_URL: "http://localhost:${LOCAL_BACKEND_PORT}"
+    image: pond-planning-frontend:latest
+    container_name: pond-frontend
+    restart: unless-stopped
+    ports:
+      - "${LOCAL_FRONTEND_PORT}:8080"
+    networks:
+      - pond-net
+    depends_on:
+      - backend
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 128M
 
 networks:
   pond-net:
