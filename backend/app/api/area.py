@@ -1,7 +1,12 @@
 from fastapi import APIRouter, Depends, HTTPException
 import math
 
-from app.api.deps import get_basin_analyzer, get_elevation_service, get_rainfall_service
+from app.api.deps import (
+    get_basin_analyzer,
+    get_elevation_service,
+    get_rainfall_service,
+    get_run_store,
+)
 from app.config import settings
 from app.core.area_contour_builder import (
     TerrainTooFlatError,
@@ -15,6 +20,7 @@ from app.core.elevation_service import ElevationLookupError, ElevationService
 from app.core.geo_utils import geodesic_polygon_area_m2
 from app.core.pond_pipeline import Timer, run_pond_pipeline
 from app.core.rainfall_service import RainfallService
+from app.core.run_store import RunStore
 from app.schemas import AreaSelectionRequest, PondPlanningResult
 
 router = APIRouter(prefix="/api", tags=["area-analysis"])
@@ -25,6 +31,7 @@ async def analyze_area(
     request: AreaSelectionRequest,
     elevation_service: ElevationService = Depends(get_elevation_service),
     rainfall_service: RainfallService = Depends(get_rainfall_service),
+    run_store: RunStore = Depends(get_run_store),
 ):
     """Phase 3's main new flow: a freeform polygon the user drew on the
     map, in — a fully composed pond recommendation, out. Elevation is
@@ -137,6 +144,8 @@ async def analyze_area(
         analyzer=analyzer,
         rainfall_service=rainfall_service,
         timer=timer,
+        run_store=run_store,
+        mode="area",
         extra_notes=(
             f"Terrain was sampled over the drawn area's bounding box at ~{effective_spacing_m:.0f} m "
             f"spacing (target: {settings.area_target_spacing_m:g} m — coarser than target means the "
