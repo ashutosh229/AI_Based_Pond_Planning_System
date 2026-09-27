@@ -1,6 +1,9 @@
 import { useCallback, useState } from "react";
+
 import { analyzeArea, recommendPond } from "./api";
+
 import FileUpload from "./components/FileUpload";
+import RunHistory from "./components/RunHistory";
 import ResultsSummary from "./components/ResultsSummary";
 import BasinList from "./components/BasinList";
 import MapView from "./components/MapView";
@@ -21,6 +24,7 @@ export default function App() {
     setError(null);
     setResult(null);
     setSelectedRank(1);
+
     try {
       const data = await promise;
       setResult(data);
@@ -37,7 +41,9 @@ export default function App() {
 
   function handleAnalyzeArea() {
     if (!pendingArea) return;
+
     const depth = minDepth === "" ? undefined : Number(minDepth);
+
     runAnalysis(analyzeArea(pendingArea, depth));
   }
 
@@ -45,17 +51,14 @@ export default function App() {
     setPendingArea(ring);
   }, []);
 
-  function handleAnalyzeArea() {
-    if (!pendingArea) return;
-    runAnalysis(analyzeArea(pendingArea));
-  }
-
   function handleModeSwitch(nextMode) {
     if (nextMode === mode) return;
+
     setMode(nextMode);
     setPendingArea(null);
     setResult(null);
     setError(null);
+    setSelectedRank(1);
     setResetSignal((n) => n + 1);
   }
 
@@ -76,14 +79,15 @@ export default function App() {
       <header className="header">
         <h1>Village Pond Planning System</h1>
         <p className="subtitle">
-          4 Draw an area or upload a contour map — get a suggested pond site,
-          its catchment, and the expected water volume.
+          Draw an area or upload a contour map — get a suggested pond site, its
+          catchment, and the expected water volume.
         </p>
       </header>
 
       <main className="main">
         <section className="panel upload-panel">
           <h2>Choose an Input</h2>
+
           <div className="mode-toggle">
             <button
               type="button"
@@ -92,6 +96,7 @@ export default function App() {
             >
               Draw area on map
             </button>
+
             <button
               type="button"
               className={mode === "kml" ? "active" : ""}
@@ -109,6 +114,7 @@ export default function App() {
                 analysis. Larger areas are sampled at coarser resolution
                 automatically.
               </p>
+
               <label
                 className="notes"
                 style={{ display: "block", marginBottom: "0.5rem" }}
@@ -124,6 +130,7 @@ export default function App() {
                   style={{ marginLeft: "0.5rem", width: "5rem" }}
                 />
               </label>
+
               <button
                 type="button"
                 className="primary-button"
@@ -139,6 +146,14 @@ export default function App() {
 
           {loading && <p className="status">Analysing…</p>}
           {error && <p className="error">{error}</p>}
+
+          {/* Persisted analysis history */}
+          <details className="run-history">
+            <summary>Recent Analysis Runs</summary>
+            <div className="run-history-content">
+              <RunHistory onLoadRun={setResult} />
+            </div>
+          </details>
         </section>
 
         {result && (
