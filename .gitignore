@@ -1,2 +1,5 @@
 changes.txt
 .env
+backend/.pids/
+backend/*.log
+gh_actions_key.pub
