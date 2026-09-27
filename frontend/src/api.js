@@ -57,3 +57,20 @@ export async function analyzeArea(polygonRing, minBasinDepthM) {
   await throwOnError(res);
   return res.json();
 }
+
+/** Phase 4: fetch recent persisted analysis runs (newest-first). */
+export async function getRuns(limit = 20, mode) {
+  const params = new URLSearchParams({ limit });
+  if (mode) params.set("mode", mode);
+
+  const res = await fetch(`${API_BASE_URL}/api/runs?${params}`);
+  await throwOnError(res);
+  return res.json();
+}
+
+/** Phase 4: fetch one persisted run's full stored result payload. */
+export async function getRun(runId) {
+  const res = await fetch(`${API_BASE_URL}/api/runs/${runId}`);
+  await throwOnError(res);
+  return res.json();
+}
