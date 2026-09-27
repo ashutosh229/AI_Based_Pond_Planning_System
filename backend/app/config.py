@@ -3,7 +3,7 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     app_name: str = "Village Pond Planning System"
-    database_url: str = "http://10.1.75.79:4205"
+    db_server_base_url: str = "http://10.1.75.79:4205"
     open_meteo_base_url: str = "https://archive-api.open-meteo.com/v1/archive"
     elevation_api_base_url: str = "https://api.opentopodata.org/v1/srtm30m"
 
