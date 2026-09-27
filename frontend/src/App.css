@@ -355,3 +355,19 @@ body {
   background-color: var(--accent) !important;
   color: #0b1220 !important;
 }
+
+.run-history {
+  margin-top: 1.25rem;
+  border-top: 1px solid var(--border-color, #444);
+  padding-top: 0.75rem;
+}
+
+.run-history summary {
+  cursor: pointer;
+  font-weight: 600;
+  padding: 0.5rem 0;
+}
+
+.run-history-content {
+  margin-top: 0.75rem;
+}
