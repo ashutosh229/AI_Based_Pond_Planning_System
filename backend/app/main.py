@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import area, contour
+from app.api import area, contour, runs
 from app.config import settings
 
 app = FastAPI(title=settings.app_name)
@@ -15,6 +15,7 @@ app.add_middleware(
 
 app.include_router(contour.router)
 app.include_router(area.router)
+app.include_router(runs.router)
 
 
 @app.get("/health")
