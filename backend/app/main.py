@@ -21,3 +21,6 @@ app.include_router(runs.router)
 @app.get("/health")
 def health_check():
     return {"status": "ok", "app": settings.app_name}
+
+
+## Dummy commit for testing the CI pipeline for backend
