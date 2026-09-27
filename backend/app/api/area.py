@@ -21,12 +21,10 @@ router = APIRouter(prefix="/api", tags=["area-analysis"])
 
 
 @router.post("/analyzeArea", response_model=PondPlanningResult)
-@router.post("/analyzeArea", response_model=PondPlanningResult)
 async def analyze_area(
     request: AreaSelectionRequest,
     elevation_service: ElevationService = Depends(get_elevation_service),
     rainfall_service: RainfallService = Depends(get_rainfall_service),
-    analyzer: ContourBasinAnalyzer = Depends(get_basin_analyzer),
 ):
     """Phase 3's main new flow: a freeform polygon the user drew on the
     map, in — a fully composed pond recommendation, out. Elevation is
@@ -38,7 +36,13 @@ async def analyze_area(
     Grid resolution is spacing-driven (estimate_grid_side), not a fixed
     point count: it targets area_target_spacing_m and only degrades
     (coarsens) once area_max_grid_points is hit, rather than rejecting
-    the area outright. area_max_size_km2 is a sanity backstop only."""
+    the area outright. area_max_size_km2 is a sanity backstop only.
+
+    min_basin_depth_m can be overridden per-request (request body) so the
+    sensitivity threshold can be tuned live from the frontend without a
+    server restart — useful since real terrain frequently has zero
+    closed-ring basins at the default 2m threshold and that's often a
+    genuine result, not a bug, worth confirming interactively."""
     if len(request.polygon) < 3:
         raise HTTPException(status_code=400, detail="A polygon needs at least 3 points")
 
@@ -67,6 +71,14 @@ async def analyze_area(
             status_code=400,
             detail=f"Drawn area is too small ({area_m2:.0f} m²) to yield a meaningful contour grid.",
         )
+
+    analyzer = ContourBasinAnalyzer(
+        min_basin_depth_m=(
+            request.min_basin_depth_m
+            if request.min_basin_depth_m is not None
+            else settings.min_basin_depth_m
+        )
+    )
 
     timer = Timer()
 
