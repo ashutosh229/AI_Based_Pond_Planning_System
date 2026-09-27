@@ -85,6 +85,7 @@ async def test_pipeline_composes_basin_analysis_with_pond_sizing():
         rainfall_service=_FakeRainfallService(),
         timer=timer,
         run_store=run_store,
+        mode="kml",
     )
 
     assert result.recommended_site is not None
@@ -104,6 +105,7 @@ async def test_pipeline_composes_basin_analysis_with_pond_sizing():
 
     saved = run_store.saved_runs[0]
 
+    assert saved["mode"] == "kml"
     assert saved["source"] == "test.kml"
     assert saved["candidate_basins_found"] == result.candidate_basins_found
     assert saved["recommended_catchment_area_m2"] == (
@@ -129,6 +131,7 @@ async def test_pipeline_degrades_gracefully_when_rainfall_lookup_fails():
         rainfall_service=_FailingRainfallService(),
         timer=timer,
         run_store=run_store,
+        mode="kml",
     )
 
     # Basin/catchment info should still come through even if rainfall fails.
@@ -163,6 +166,7 @@ async def test_pipeline_skips_rainfall_lookup_when_no_basin_found():
         rainfall_service=_FakeRainfallService(),
         timer=timer,
         run_store=run_store,
+        mode="kml",
     )
 
     assert result.recommended_site is None
