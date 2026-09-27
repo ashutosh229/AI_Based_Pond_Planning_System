@@ -14,6 +14,7 @@ export default function App() {
   const [selectedRank, setSelectedRank] = useState(1);
   const [pendingArea, setPendingArea] = useState(null);
   const [resetSignal, setResetSignal] = useState(0);
+  const [minDepth, setMinDepth] = useState("");
 
   async function runAnalysis(promise) {
     setLoading(true);
@@ -32,6 +33,12 @@ export default function App() {
 
   function handleKmlUpload(file) {
     runAnalysis(recommendPond(file));
+  }
+
+  function handleAnalyzeArea() {
+    if (!pendingArea) return;
+    const depth = minDepth === "" ? undefined : Number(minDepth);
+    runAnalysis(analyzeArea(pendingArea, depth));
   }
 
   const handleAreaDrawn = useCallback((ring) => {
@@ -69,8 +76,8 @@ export default function App() {
       <header className="header">
         <h1>Village Pond Planning System</h1>
         <p className="subtitle">
-4          Draw an area or upload a contour map — get a suggested pond site, its
-          catchment, and the expected water volume.
+          4 Draw an area or upload a contour map — get a suggested pond site,
+          its catchment, and the expected water volume.
         </p>
       </header>
 
@@ -102,6 +109,21 @@ export default function App() {
                 analysis. Larger areas are sampled at coarser resolution
                 automatically.
               </p>
+              <label
+                className="notes"
+                style={{ display: "block", marginBottom: "0.5rem" }}
+              >
+                Min basin depth (m, optional):
+                <input
+                  type="number"
+                  step="0.5"
+                  min="0"
+                  placeholder={`default ${2.0}`}
+                  value={minDepth}
+                  onChange={(e) => setMinDepth(e.target.value)}
+                  style={{ marginLeft: "0.5rem", width: "5rem" }}
+                />
+              </label>
               <button
                 type="button"
                 className="primary-button"
