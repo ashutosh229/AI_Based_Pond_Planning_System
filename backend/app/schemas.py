@@ -84,11 +84,14 @@ class ContourAnalysisResult(BaseModel):
 
 
 class AreaSelectionRequest(BaseModel):
-    """A freeform polygon drawn by the user on the map: a ring of
-    [lon, lat] vertex pairs. The ring does not need to be explicitly
-    closed (first point repeated at the end) — the backend closes it."""
-
-    polygon: list[list[float]] = Field(..., min_length=3, description="[[lon, lat], ...] vertices")
+    polygon: list[list[float]] = Field(
+        ..., min_length=3, description="[[lon, lat], ...] vertices"
+    )
+    min_basin_depth_m: float | None = Field(
+        None,
+        ge=0,
+        description="Override the server default basin-depth threshold for this request",
+    )
 
 
 class PondRecommendation(BaseModel):
