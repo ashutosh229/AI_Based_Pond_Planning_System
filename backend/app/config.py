@@ -3,7 +3,7 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     app_name: str = "Village Pond Planning System"
-    database_url: str = "postgresql://pond_user:pond_pass@localhost:5432/pond_planning"
+    database_url: str = "http://10.1.75.79:4205"
     open_meteo_base_url: str = "https://archive-api.open-meteo.com/v1/archive"
     elevation_api_base_url: str = "https://api.opentopodata.org/v1/srtm30m"
 
@@ -47,6 +47,8 @@ class Settings(BaseSettings):
     # Years of Open-Meteo daily history averaged into an annual rainfall
     # figure for the recommended site.
     rainfall_years: int = 10
+    # Timeout for saving the analysis results.
+    db_save_timeout_s: float = 5.0
 
     class Config:
         env_file = ".env"
