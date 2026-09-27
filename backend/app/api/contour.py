@@ -1,10 +1,16 @@
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 
-from app.api.deps import get_basin_analyzer, get_rainfall_service
+from app.api.deps import get_basin_analyzer, get_rainfall_service, get_run_store
 from app.core.contour_basin_analyzer import ContourAnalysisOutcome, ContourBasinAnalyzer
 from app.core.kml_parser import KMLParseError, parse_contours
-from app.core.pond_pipeline import Timer, basin_to_candidate, build_basin_notes, run_pond_pipeline
+from app.core.pond_pipeline import (
+    Timer,
+    basin_to_candidate,
+    build_basin_notes,
+    run_pond_pipeline,
+)
 from app.core.rainfall_service import RainfallService
+from app.core.run_store import RunStore
 from app.schemas import ContourAnalysisResult, PondPlanningResult
 
 router = APIRouter(prefix="/api", tags=["contour-analysis"])
@@ -75,6 +81,7 @@ async def recommend_pond(
     file: UploadFile = File(..., description="Contour map in KML or KMZ format"),
     analyzer: ContourBasinAnalyzer = Depends(get_basin_analyzer),
     rainfall_service: RainfallService = Depends(get_rainfall_service),
+    run_store: RunStore = Depends(get_run_store),
 ):
     """Phase 3: composes the Phase 2 contour/basin analysis with Phase 1's
     rainfall -> runoff -> pond-sizing chain for a KML/KMZ upload — the
@@ -90,4 +97,6 @@ async def recommend_pond(
         analyzer=analyzer,
         rainfall_service=rainfall_service,
         timer=timer,
+        run_store=run_store,
+        mode="kml",
     )
