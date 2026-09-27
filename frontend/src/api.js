@@ -45,11 +45,14 @@ export async function recommendPond(file) {
 /** Phase 3: a freeform polygon drawn on the map -> the same full
  * recommendation shape as recommendPond.
  * @param {Array<[number, number]>} polygonRing - [[lon, lat], ...] */
-export async function analyzeArea(polygonRing) {
+export async function analyzeArea(polygonRing, minBasinDepthM) {
+  const body = { polygon: polygonRing };
+  if (minBasinDepthM != null) body.min_basin_depth_m = minBasinDepthM;
+
   const res = await fetch(`${API_BASE_URL}/api/analyzeArea`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ polygon: polygonRing }),
+    body: JSON.stringify(body),
   });
   await throwOnError(res);
   return res.json();
