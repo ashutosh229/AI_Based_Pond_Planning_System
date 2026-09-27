@@ -2,6 +2,7 @@ from app.config import settings
 from app.core.contour_basin_analyzer import ContourBasinAnalyzer
 from app.core.elevation_service import ElevationService
 from app.core.rainfall_service import RainfallService
+from app.core.run_store import RunStore
 
 
 def get_basin_analyzer() -> ContourBasinAnalyzer:
@@ -17,4 +18,12 @@ def get_elevation_service() -> ElevationService:
 
 
 def get_rainfall_service() -> RainfallService:
-    return RainfallService(base_url=settings.open_meteo_base_url, years=settings.rainfall_years)
+    return RainfallService(
+        base_url=settings.open_meteo_base_url, years=settings.rainfall_years
+    )
+
+
+def get_run_store() -> RunStore:
+    return RunStore(
+        base_url=settings.db_server_base_url, timeout_s=settings.db_save_timeout_s
+    )
