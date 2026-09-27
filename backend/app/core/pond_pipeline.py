@@ -28,6 +28,8 @@ from app.core.kml_parser import ContourLine
 
 from app.core.rainfall_service import RainfallLookupError, RainfallService
 
+from app.core.run_store import RunStore
+
 from app.core.runoff import RunoffCalculator
 
 from app.core.pond_sizing import PondSizer
@@ -100,7 +102,8 @@ async def run_pond_pipeline(
     analyzer: ContourBasinAnalyzer,
     rainfall_service: RainfallService,
     timer: Timer,
-    run_store,
+    run_store: RunStore,
+    mode: str,
     extra_notes: str = "",
 ) -> PondPlanningResult:
 
@@ -161,7 +164,9 @@ async def run_pond_pipeline(
                     notes=sizing.notes,
                 )
 
-    # Persist the completed pipeline result in the database.
+    # Persist the completed pipeline result in the database. A save
+    # failure is never fatal to the response — the analysis result the
+    # user is waiting on is more important than its own history entry.
     with timer.measure("db_save_ms"):
         run_id = await run_store.save_run(
             {
