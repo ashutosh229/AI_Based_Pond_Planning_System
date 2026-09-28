@@ -1,330 +1,299 @@
 # AI-Based Village Pond Planning System
 
-A geospatial decision-support tool for identifying and sizing rainwater-harvesting ponds in rural/hilly terrain. Given either a contour map or a freeform area drawn on a map, the system finds natural depressions (basins) suitable for a pond, delineates each basin's catchment area from contour topology, looks up historical rainfall for the recommended site, and turns that into a recommended pond depth, storage volume, and feasibility verdict.
+> A geospatial decision-support platform that recommends where to build a rainwater-harvesting pond, how much land drains into it, and how much water it can hold.
+
+[![Backend CI](https://github.com/ashutosh229/AI_Based_Pond_Planning_System/actions/workflows/backend-ci.yml/badge.svg)](https://github.com/ashutosh229/AI_Based_Pond_Planning_System/actions/workflows/backend-ci.yml)
+[![Frontend CI](https://github.com/ashutosh229/AI_Based_Pond_Planning_System/actions/workflows/frontend-ci.yml/badge.svg)](https://github.com/ashutosh229/AI_Based_Pond_Planning_System/actions/workflows/frontend-ci.yml)
+[![Docker Build](https://github.com/ashutosh229/AI_Based_Pond_Planning_System/actions/workflows/docker-build.yml/badge.svg)](https://github.com/ashutosh229/AI_Based_Pond_Planning_System/actions/workflows/docker-build.yml)
+![License](https://img.shields.io/badge/license-MIT-blue)
 
 **Repository:** https://github.com/ashutosh229/AI_Based_Pond_Planning_System
-<br>
-**License:** MIT (see [`LICENSE`](LICENSE))
-<br>
 **Author:** Ashutosh Kumar Jha
-
-Full Phase 2 write-up (approach, algorithm walkthrough, demonstration output): [`docs/phase2_report.md`](docs/phase2_report.md)
-
-### Phase 3 — what changed
-
-Phase 2 only accepted a pre-made KML/KMZ contour export. Phase 3 adds a second, primary input path — **drawing a freeform area directly on the map** — and composes the previously-unwired Phase 1 modules (`RunoffCalculator`, `PondSizer`) onto the Phase 2 basin analysis so every request returns all three required results in one response: **suggested pond location, catchment area, and expected water volume**.
-
-- **`POST /api/analyzeArea`** — a freeform polygon in, a full recommendation out. Elevation is sampled over the polygon's bounding box from [OpenTopoData](https://www.opentopodata.org/) (SRTM 30m), contours are extracted from that sampled surface via marching squares (`app/core/area_contour_builder.py`), and from there it reuses the exact same `ContourBasinAnalyzer` Phase 2 already had.
-- **`POST /api/recommendPond`** — the KML/KMZ upload flow, now also composed with rainfall + runoff + pond sizing (previously `RunoffCalculator`/`PondSizer` existed but had no route wiring them up — this was the Phase 2 roadmap's top item).
-- Both routes share one pipeline (`app/core/pond_pipeline.py`), so the map-drawn and KML-upload input modes are functionally identical from the recommended-site onward, and both return a `timings_ms` breakdown of every step (elevation fetch, contour extraction, basin analysis, rainfall lookup, pond sizing) for reproducible performance figures.
-- The frontend now offers a mode toggle: **draw an area** (Leaflet-Geoman freeform polygon tool) or **upload KML/KMZ** — both feed the same results view, with the pond's water-volume recommendation now shown alongside the catchment map.
-- `POST /api/analyzeContour` is unchanged and kept for backward compatibility (contour/basin analysis only, no rainfall/sizing, no external API calls).
+**License:** MIT
 
 ---
 
 ## Table of Contents
 
-- [What this project does](#what-this-project-does)
-- [Architecture](#architecture)
-- [Tech stack](#tech-stack)
-- [Repository layout](#repository-layout)
-- [Getting started](#getting-started)
-  - [Backend](#backend)
-  - [Frontend](#frontend)
-- [Configuration](#configuration)
-- [API Reference](#api-reference)
-  - [`GET /health`](#get-health)
-  - [`POST /api/analyzeContour`](#post-apianalyzecontour)
-  - [`POST /api/findCatchment`](#post-apifindcatchment)
-  - [`POST /api/recommendPond`](#post-apirecommendpond)
-  - [`POST /api/analyzeArea`](#post-apianalyzearea)
-- [The catchment-detection algorithm](#the-catchment-detection-algorithm)
-- [Freeform area analysis (elevation sampling → contours)](#freeform-area-analysis-elevation-sampling--contours)
-- [Phase 1 core modules (runoff & pond sizing)](#phase-1-core-modules-runoff--pond-sizing)
-- [Frontend application](#frontend-application)
-- [Testing](#testing)
-- [Demonstration](#demonstration)
-- [Known limitations](#known-limitations)
-- [Roadmap](#roadmap)
-- [License](#license)
+1. [Overview](#1-overview)
+2. [Key Capabilities](#2-key-capabilities)
+3. [System Architecture](#3-system-architecture)
+4. [Request Lifecycle](#4-request-lifecycle)
+5. [Core Algorithms](#5-core-algorithms)
+6. [Data Model and Persistence](#6-data-model-and-persistence)
+7. [API Reference](#7-api-reference)
+8. [Design Decisions and Trade-offs](#8-design-decisions-and-trade-offs)
+9. [Reliability and Failure Modes](#9-reliability-and-failure-modes)
+10. [Performance](#10-performance)
+11. [Deployment Topology](#11-deployment-topology)
+12. [Getting Started](#12-getting-started)
+13. [Configuration](#13-configuration)
+14. [Containerization](#14-containerization)
+15. [CI/CD Pipeline](#15-cicd-pipeline)
+16. [Operations Runbook](#16-operations-runbook)
+17. [Testing Strategy](#17-testing-strategy)
+18. [Security Posture](#18-security-posture)
+19. [Known Limitations](#19-known-limitations)
+20. [Scaling Path and Roadmap](#20-scaling-path-and-roadmap)
+21. [Repository Layout](#21-repository-layout)
+22. [License](#22-license)
 
 ---
 
-## What this project does
+## 1. Overview
 
-Villages in hilly terrain often need small check-dams or farm ponds to capture monsoon runoff. Picking a site by eye is error-prone: a good pond site needs (a) a natural low point to hold water and (b) a large enough upstream catchment to fill it. This project automates that site selection from either a contour map or a freeform area drawn on a map:
+Villages in hilly terrain rely on small farm ponds and check-dams to capture monsoon runoff. A good site needs two things at once:
 
-1. **Provide an area to analyze** — either **draw a freeform polygon on the map** (elevation is sampled live from an elevation API), or **upload a contour map** (KML/KMZ — the format exported by most GIS/survey tools).
-2. The backend **detects closed contour rings**, builds a **containment hierarchy**, and classifies each nested low point as a genuine basin (vs. a hilltop or digitisation noise) — identical logic for both input paths.
-3. For every basin, it **delineates the catchment** — the contour ring up to which water draining toward that pit is bounded — and computes the catchment's real-world area on the WGS84 ellipsoid.
-4. Basins are **ranked by catchment area**, and the top candidate plus up to 5 runner-ups are returned with GeoJSON boundaries for mapping.
-5. For the recommended site, historical rainfall is looked up automatically and fed through **`RunoffCalculator`/`PondSizer`** to produce a recommended pond depth, storage volume, and feasibility verdict — so every request returns all three required results: **suggested pond location, catchment area, and expected water volume.**
-6. A **React/Leaflet frontend** lets you draw an area or drag-and-drop a contour file, browse ranked candidates, see each catchment boundary and the water-volume recommendation, and view everything on an interactive map.
+1. a **natural depression** that can hold water, and
+2. a **large enough upstream catchment** to fill it.
 
-## Architecture
+Judging both from a contour map or a walk of the land is slow and error-prone. Rainfall data is rarely available at village level, and turning "this basin drains this much land" into "the pond should be this deep and hold this much water" needs a runoff calculation most people won't do by hand.
 
-<p align="center">
-  <img src="docs/village_pond_architecture.svg" alt="System Architecture" width="900">
-</p>
+This system takes either **a polygon drawn on a map** or **a KML/KMZ contour file** and returns, in a single request:
 
-The layering is intentionally strict: `api/` contains only route handlers, all algorithmic logic lives in `core/`, and request/response contracts live in `schemas.py`. This keeps the analysis logic unit-testable without spinning up FastAPI or touching HTTP at all.
+| Output | Description |
+|---|---|
+| **Suggested pond location** | The best-ranked natural depression, plus up to five runner-ups |
+| **Catchment area** | Boundary polygon (GeoJSON) and geodesic area on the WGS84 ellipsoid |
+| **Expected water volume** | Annual runoff, design storage, usable volume, recommended depth and a feasibility verdict, derived from historical rainfall at the site |
 
-## Tech stack
+Every completed analysis is persisted, so past results can be reloaded without re-running the pipeline.
 
-| Layer                 | Technology                                                                                               |
-| --------------------- | -------------------------------------------------------------------------------------------------------- |
-| Backend framework     | FastAPI + Uvicorn                                                                                        |
-| Geometry / geospatial | Shapely (planar geometry, containment), Pyproj (geodesic area on WGS84), Shapely STRtree (spatial index) |
-| KML/KMZ parsing       | lxml (namespace-agnostic XML walking), zipfile                                                           |
-| Config                | pydantic-settings (`.env`-driven)                                                                        |
-| Testing               | pytest, httpx                                                                                            |
-| Frontend framework    | React 18 + Vite                                                                                          |
-| Mapping               | Leaflet + react-leaflet                                                                                  |
-| Styling               | Hand-written CSS (dark theme, CSS custom properties)                                                     |
+---
 
-## Repository layout
+## 2. Key Capabilities
 
-```
-backend/
-  app/
-    api/
-      contour.py            POST /api/analyzeContour (+ /api/findCatchment alias)
-    core/
-      kml_parser.py          KML/KMZ → ContourLine[]
-      contour_basin_analyzer.py   Basin detection + catchment delineation
-      runoff.py               RunoffCalculator (Phase 1)
-      pond_sizing.py           PondSizer (Phase 1)
-    main.py                  FastAPI app, CORS, router registration
-    config.py                pydantic-settings Settings (env-driven)
-    schemas.py                Pydantic request/response models
-  tests/
-    test_contour_analysis.py  Basin/hill/saddle-point unit tests on synthetic KML
-    test_runoff.py            RunoffCalculator unit tests
-    test_pond_sizing.py       PondSizer unit tests
-  requirements.txt
-data/
-  sample_contours/contours_1m.kml   Sample village contour export used for dev + demo
-frontend/
-  src/
-    api.js                    fetch wrapper for /api/analyzeContour
-    App.jsx / App.css         Layout, dark-theme styling
-    components/
-      FileUpload.jsx           Drag-and-drop KML/KMZ picker
-      ResultsSummary.jsx       Parse stats (interval, elevation range, contour counts)
-      BasinList.jsx            Ranked candidate list with area/depth stats
-      MapView.jsx               Leaflet map: catchment polygons + pit markers
-  vite.config.js               Dev-server proxy to the deployed backend
-docs/
-  phase2_report.md            Full write-up: approach, algorithm, demo output, API docs
-README.md
-LICENSE
+- **Two interchangeable input modes.** A freeform polygon on an interactive map (elevation sampled live from SRTM), or a KML/KMZ contour export. Both converge on one pipeline.
+- **Topology-based basin detection.** Works directly on vector contour lines, using a spatial-indexed containment tree and drainage-divide (saddle) detection.
+- **Automated hydrology chain.** Historical rainfall lookup, then runoff, storage sizing, depth and feasibility.
+- **Run history.** Each result is saved to a dedicated database service and can be reloaded from the UI.
+- **Observability by construction.** Every response carries a `timings_ms` breakdown of each pipeline stage.
+- **Graceful degradation.** Rainfall and persistence failures never prevent the primary result from being returned.
+- **Delivery tooling.** Docker images for local reproducibility and a five-workflow GitHub Actions pipeline.
+
+---
+
+## 3. System Architecture
+
+The system has three independently deployable services and two external read-only data providers.
+
+```mermaid
+flowchart LR
+    subgraph Client["Browser"]
+        UI["React + Leaflet SPA<br/>draw area / upload KML"]
+    end
+
+    subgraph Sys2["Remote system 2 (SSH 2206)"]
+        FE["Static frontend<br/>npx serve :4000 -> global 4206"]
+    end
+
+    subgraph Sys1["Remote system 1 (SSH 2205)"]
+        API["FastAPI application server<br/>:3000 -> global 3205"]
+        DB["SQLite REST DB server<br/>:4000 -> global 4205"]
+        SQL[("pond_runs.db<br/>SQLite, WAL mode")]
+        DB --- SQL
+    end
+
+    subgraph External["External APIs"]
+        OTD["OpenTopoData<br/>SRTM 30 m elevation"]
+        OM["Open-Meteo<br/>historical rainfall"]
+    end
+
+    FE -. serves bundle .-> UI
+    UI -- "REST / JSON" --> API
+    API -- "HTTP: persist / list / get runs" --> DB
+    API -- "elevation lookup" --> OTD
+    API -- "rainfall lookup" --> OM
 ```
 
-## Getting started
+### Layering inside the application server
 
-### Backend
-
-**Prerequisites:** Python 3.10+ (uses `X | None` union syntax and `dataclass` features).
-
-#### Local machine
-
-```bash
-cd backend
-python -m venv venv && source venv/bin/activate   # Windows: venv\Scripts\activate
-pip install -r requirements.txt
-uvicorn app.main:app --reload --port 8001
+```mermaid
+flowchart TB
+    R["api/ - route handlers only<br/>area.py, contour.py, runs.py, deps.py"]
+    P["core/pond_pipeline.py - orchestration and timing"]
+    subgraph Core["core/ - domain logic, no HTTP framework dependency"]
+        A1["kml_parser"]
+        A2["area_contour_builder"]
+        A3["contour_basin_analyzer"]
+        A4["rainfall_service"]
+        A5["runoff + pond_sizing"]
+        A6["run_store"]
+        A7["elevation_service"]
+    end
+    S["schemas.py - Pydantic contracts"]
+    R --> P --> Core
+    R --> S
 ```
 
-The API is now available at `http://localhost:8001`, with interactive Swagger docs at `http://localhost:8001/docs`.
+The layering is strict: `api/` contains only route handlers, all logic lives in `core/`, and contracts live in `schemas.py`. The domain logic is therefore unit-testable without FastAPI or a network. All three outbound clients (`ElevationService`, `RainfallService`, `RunStore`) accept an injectable `httpx` transport, wired in through FastAPI's `Depends`.
 
-#### Remote SSH lab systems
+### Why the database is a separate service
 
-```bash
-cd backend
-pip install -r requirements.txt
-python3 -m uvicorn app.main:app --reload --host 0.0.0.0 --port 3000
+The application server does not open the SQLite file. It talks to a small REST service (`db_server.py`) over HTTP. This has three consequences:
+
+- **The app server stays stateless.** It holds no local files, so replicas can be added without shared-disk concerns.
+- **The persistence backend is swappable.** Nothing in the pipeline assumes SQLite. It depends only on `save_run`, `list_runs` and `get_run`.
+- **Failure domains are separated.** The database can be restarted or rebuilt independently of the API.
+
+---
+
+## 4. Request Lifecycle
+
+### Drawn-area flow (`POST /api/analyzeArea`)
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as Client
+    participant A as FastAPI
+    participant E as OpenTopoData
+    participant R as Open-Meteo
+    participant D as DB server
+
+    C->>A: POST polygon
+    A->>A: validate size and compute geodesic area
+    A->>A: build sample grid over bounding box
+    loop chunks of 100 points, about 1 s apart
+        A->>E: GET elevations
+        E-->>A: elevations
+    end
+    A->>A: fill gaps, marching squares, contour lines
+    A->>A: containment tree, basin detection, catchment delineation
+    A->>R: GET daily precipitation for best site
+    R-->>A: precipitation series
+    A->>A: runoff, storage sizing, feasibility
+    A->>D: POST completed run
+    D-->>A: run id
+    A-->>C: PondPlanningResult with timings_ms
 ```
 
-`--host 0.0.0.0` is required so the server is reachable from outside the SSH host.
+### KML flow (`POST /api/recommendPond`)
 
-#### Try it against the sample file
+Identical from the "containment tree" step onward. The elevation-sampling steps are replaced by KML/KMZ parsing (`kml_parse_ms`). Because both routes call the same `run_pond_pipeline()`, they behave identically from that point, including persistence.
 
-```bash
-curl -X POST "http://10.1.75.79:3205/api/analyzeContour" \
-  -F "file=@data/sample_contours/contours_1m.kml"
+---
+
+## 5. Core Algorithms
+
+### 5.1 Contour source normalization
+
+Both input paths produce the same structure: `ContourLine(elevation, points[(lon, lat)], is_closed)`.
+
+**KML/KMZ.** `kml_parser.py` walks the document for `Placemark → LineString → elevation`, without depending on folder names. Elevation is read from `<name>` first, then from `ExtendedData` fields (`elevation`, `elev`, `height`, `contour`, `value`, `z`). Rings are flagged closed or open, and `.kmz` archives are unwrapped.
+
+**Drawn polygon.** `area_contour_builder.py`:
+
+1. Builds a regular lat/lon grid over the polygon's bounding box, padded by 5%.
+2. Chooses grid density from **target ground spacing** (30 m, matching SRTM resolution), clamped to `[9, 80]` per side and to a hard cap on total points (default 1,024). Resolution scales with area, and cost is bounded.
+3. Fetches elevations in chunks of 100 with a 1 s inter-request delay, to respect the public OpenTopoData limits.
+4. Fills missing samples (usually water) by nearest-neighbour interpolation (`scipy.interpolate.griddata`).
+5. Picks a contour interval from the sampled range, snapped to a "nice" step (0.5, 1, 2, 2.5, 5, 10, ...). Terrain with less than 0.5 m of relief is rejected with HTTP 422.
+6. Extracts contours with **marching squares** (`skimage.measure.find_contours`). Paths touching the grid edge are marked open, the same semantics as a KML contour clipped by its map boundary.
+
+### 5.2 Basin detection and catchment delineation
+
+Because the input is vector contour lines, the algorithm works on **contour topology** rather than approximating a raster for D8 flow accumulation.
+
+1. **Keep closed rings only.** Containment cannot be tested for open rings.
+2. **Build a containment tree.** Each ring's parent is the smallest-area ring, at any elevation, that fully contains it. A Shapely `STRtree` spatial index prunes candidates, avoiding brute-force O(n²) checks.
+3. **Classify leaves.** A leaf ring (nothing nested inside) whose parent is at a **higher** elevation is a basin. A lower parent means a hilltop, which is discarded.
+4. **Walk outward from each pit** while elevation increases. Stop at the first ring that contains more than one nested basin. That ring is a **drainage divide (saddle)**. The last valid ring before it is the catchment boundary.
+5. **Filter and rank.** Basins shallower than `min_basin_depth_m` (default 2 m, overridable per request) are dropped as noise. The rest are ranked by catchment area. Rank 1 is the recommendation, and up to five alternatives are returned.
+
+Areas are computed with `pyproj.Geod.polygon_area_perimeter` on WGS84 lon/lat. This avoids both degree-space distortion and guessing a UTM zone.
+
+### 5.3 Rainfall, runoff and pond sizing
+
+```
+annual_rainfall_m     = sum(daily precipitation over last N complete years) / N
+annual_runoff_m3      = runoff_coefficient x catchment_area_m2 x annual_rainfall_m
+design_storage_m3     = annual_runoff_m3 x capture_fraction
+usable_volume_m3      = design_storage_m3 x (1 - loss_factor)
+recommended_depth_m   = usable_volume_m3 / pond_footprint_area_m2
+feasible              = 0.5 m <= recommended_depth_m <= 4.0 m   (deeper is infeasible, shallower is flagged)
 ```
 
-Interactive docs (deployed instance): `http://10.1.75.79:3205/docs`
-<br>
-Local docs: replace the host/port above with wherever you started Uvicorn.
+Defaults: `runoff_coefficient = 0.3`, `capture_fraction = 0.2`, `loss_factor = 0.15`, `N = 10` years. `RunoffCalculator` also exposes a rational-method peak-flow helper.
 
-> Both `10.1.75.79:3205` URLs referenced throughout this README and `docs/phase2_report.md` are the currently deployed instance used for grading/demo. Swap in `localhost:<port>` for local development.
+---
 
-### Frontend
+## 6. Data Model and Persistence
 
-**Prerequisites:** Node.js 18+.
+The database service (`backend/app/db_server.py`) stores one row per completed analysis.
 
-```bash
-cd frontend
-npm install
-```
+### `runs` table
 
-Create a `.env` file in `frontend/` pointing at your backend (the app reads `VITE_API_BASE_URL` directly — it does not use the `vite.config.js` dev proxy for its own fetches):
+| Column | Type | Notes |
+|---|---|---|
+| `id` | `TEXT PRIMARY KEY` | UUIDv4, generated server-side |
+| `mode` | `TEXT NOT NULL` | `"area"` or `"kml"` |
+| `source` | `TEXT NOT NULL` | Filename or drawn-area description |
+| `created_at` | `INTEGER NOT NULL` | Unix seconds |
+| `contour_interval_m` | `REAL` | |
+| `elevation_min_m`, `elevation_max_m` | `REAL` | |
+| `candidate_basins_found` | `INTEGER` | |
+| `recommended_catchment_area_m2` | `REAL` | `NULL` when no basin was found |
+| `is_feasible` | `INTEGER` | `0`, `1` or `NULL` |
+| `result_json` | `TEXT NOT NULL` | Full `PondPlanningResult`, so a run reloads exactly as produced |
 
-```bash
-# frontend/.env
-VITE_API_BASE_URL=http://10.1.75.79:3205
-# or, for a locally running backend:
-# VITE_API_BASE_URL=http://localhost:8001
-```
+**Indexes** match the two access patterns of the history endpoint: `(created_at DESC)` for newest-first and `(mode, created_at DESC)` for newest-first filtered by mode.
 
-Then run the dev server:
+**Concurrency model.** SQLite runs in **WAL mode** (`synchronous=NORMAL`). Any number of readers proceed while one writer is active, so a process-wide lock guards only `INSERT`. List and get queries are unlocked, and a burst of history reads never queues behind an analysis save.
 
-```bash
-npm run dev
-```
+**Summary columns vs. JSON blob.** Fields needed by the list view are denormalized into columns, so listing never deserializes large GeoJSON payloads. The blob is read only when a single run is reloaded.
 
-Open the printed local URL (default `http://localhost:5173`), drag a `.kml`/`.kmz` file onto the upload panel, and the ranked basin candidates will render on the map.
+---
 
-Production build:
+## 7. API Reference
 
-```bash
-npm run build
-npm run preview
-```
+Deployed application server: `http://10.1.75.79:3205`. Interactive OpenAPI docs are at `/docs`.
 
-## Configuration
+### Application server
 
-All backend configuration is centralized in [`app/config.py`](backend/app/config.py) via `pydantic-settings`, overridable through a `backend/.env` file or environment variables:
-
-| Setting                      | Default                                                         | Purpose                                                                                                                                                                           |
-| ---------------------------- | --------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `app_name`                   | `Village Pond Planning System`                                  | FastAPI app title                                                                                                                                                                 |
-| `database_url`               | `postgresql://pond_user:pond_pass@localhost:5432/pond_planning` | Reserved for village/rainfall persistence (Phase 1 scope; not exercised by the current contour-analysis endpoint)                                                                 |
-| `open_meteo_base_url`        | `https://archive-api.open-meteo.com/v1/archive`                 | Historical rainfall source (Phase 1)                                                                                                                                              |
-| `elevation_api_base_url`     | `https://api.opentopodata.org/v1/srtm30m`                       | Elevation lookup fallback (Phase 1)                                                                                                                                               |
-| `default_runoff_coefficient` | `0.3`                                                           | Default input to `RunoffCalculator`                                                                                                                                               |
-| `default_capture_fraction`   | `0.2`                                                           | Default input to `RunoffCalculator`                                                                                                                                               |
-| `default_loss_factor`        | `0.15`                                                          | Default input to `PondSizer`                                                                                                                                                      |
-| `min_basin_depth_m`          | `2.0`                                                           | Minimum (catchment elevation − pit elevation) for a depression to count as a real basin candidate rather than digitisation noise. Directly affects `/api/analyzeContour` results. |
-| `area_max_grid_points`       | `256`                                                           | Target elevation-sample grid size for `/api/analyzeArea` (bounds accuracy vs. # of API calls)                                                                                    |
-| `area_grid_min_side`/`area_grid_max_side` | `9` / `20`                                         | Clamp on the grid's side length regardless of `area_max_grid_points`                                                                                                              |
-| `area_contour_levels`        | `15`                                                            | Target number of contour levels extracted from the sampled DEM grid                                                                                                               |
-| `area_max_size_km2`          | `5.0`                                                           | Drawn-area size cap — larger areas get too coarse a grid to be meaningful at the fixed sample count                                                                              |
-| `area_min_size_m2`           | `500.0`                                                         | Drawn-area minimum size — below this there's nothing to build a grid from                                                                                                          |
-| `elevation_chunk_size`       | `100`                                                           | Points per OpenTopoData request (its public-instance limit)                                                                                                                       |
-| `elevation_request_delay_s`  | `1.0`                                                           | Delay between elevation-fetch chunks, to respect OpenTopoData's rate limit                                                                                                        |
-| `rainfall_years`             | `10`                                                            | Years of Open-Meteo daily history averaged into an annual rainfall figure                                                                                                          |
-
-## API Reference
-
-Base URL below is the deployed instance; substitute your own host/port for local runs.
-
-### `GET /health`
-
-Liveness check.
-
-```json
-{ "status": "ok", "app": "Village Pond Planning System" }
-```
-
-### `POST /api/analyzeContour`
-
-Accepts a contour map and returns ranked candidate pond sites with catchment estimates.
-
-**Request:** `multipart/form-data`
-
-| Field  | Type | Required | Description                              |
-| ------ | ---- | -------- | ---------------------------------------- |
-| `file` | file | yes      | Contour map, `.kml` or `.kmz`, max 25 MB |
-
-**Example:**
-
-```bash
-curl -X POST "http://10.1.75.79:3205/api/analyzeContour" \
-  -F "file=@data/sample_contours/contours_1m.kml"
-```
-
-**Response `200 OK`:**
-
-```json
-{
-  "source_filename": "contours_1m.kml",
-  "contour_interval_m": 1.0,
-  "elevation_range_m": [267.0, 298.0],
-  "total_contours_parsed": 1355,
-  "closed_contours_used": 1127,
-  "candidate_basins_found": 56,
-  "recommended_site": {
-    "rank": 1,
-    "site": { "lat": 21.256846, "lon": 81.302578 },
-    "pit_elevation_m": 280.0,
-    "catchment_boundary_elevation_m": 288.0,
-    "basin_depth_m": 8.0,
-    "pond_footprint_area_m2": 1292.7,
-    "catchment_area_m2": 27648.1,
-    "catchment_boundary_geojson": {
-      "type": "Polygon",
-      "coordinates": [
-        [
-          /* ... */
-        ]
-      ]
-    }
-  },
-  "alternative_sites": [
-    /* up to 5 more BasinCandidate objects */
-  ],
-  "notes": "Detected contour interval: 1 m. 1127 closed contour rings were usable out of 1355 total contour lines parsed (open contours that touch the map boundary are excluded from basin detection since containment can't be determined for them). Basins shallower than 2 m were filtered out as likely digitisation noise."
-}
-```
-
-**Error responses:**
-
-| Status | Meaning                                                               |
-| ------ | --------------------------------------------------------------------- |
-| `400`  | File extension isn't `.kml`/`.kmz`                                    |
-| `413`  | File exceeds 25 MB                                                    |
-| `422`  | File couldn't be parsed as a contour map (no usable Placemarks found) |
-
-### `POST /api/findCatchment`
-
-Identical alias for `/api/analyzeContour`, provided to match the assignment's alternate suggested route name. Hidden from the OpenAPI schema (`include_in_schema=False`) but fully functional.
-
-### `POST /api/recommendPond`
-
-Same input as `/api/analyzeContour` (a KML/KMZ upload), but returns the full Phase 3 recommendation: basin/catchment info **plus** rainfall-derived pond sizing.
-
-**Request:** `multipart/form-data` — identical to `/api/analyzeContour` (`file`, `.kml`/`.kmz`, max 25 MB).
-
-**Response `200 OK`:** a `PondPlanningResult` — see [`/api/analyzeArea`](#post-apianalyzearea) below for the shape; the only difference is `"source"` holds the uploaded filename instead of a drawn-area description, and there's a `kml_parse_ms` entry in `timings_ms` instead of `elevation_fetch_ms`/`contour_extraction_ms`.
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/health` | Liveness probe |
+| `POST` | `/api/analyzeArea` | Drawn polygon in, full recommendation out, persisted |
+| `POST` | `/api/recommendPond` | KML/KMZ in, full recommendation out, persisted |
+| `POST` | `/api/analyzeContour` | KML/KMZ in, basin and catchment analysis only. No rainfall, no persistence, no external calls |
+| `POST` | `/api/findCatchment` | Alias of `analyzeContour` (hidden from OpenAPI) |
+| `GET` | `/api/runs?limit=&mode=` | List persisted runs, newest first |
+| `GET` | `/api/runs/{id}` | One run with its full stored result |
 
 ### `POST /api/analyzeArea`
 
-The Phase 3 entry point for the map's freeform draw tool: a polygon in, a full recommendation out. Elevation is sampled over the polygon's bounding box (with a small margin) rather than clipped exactly to the drawn outline — see [Known limitations](#known-limitations).
-
-**Request:** `application/json`
-
 ```json
-{ "polygon": [[81.302, 21.255], [81.306, 21.255], [81.306, 21.259], [81.302, 21.259]] }
+{
+  "polygon": [[81.302, 21.255], [81.306, 21.255], [81.306, 21.259], [81.302, 21.259]],
+  "min_basin_depth_m": 2.0
+}
 ```
 
-| Field     | Type                | Required | Description                                                    |
-| --------- | ------------------- | -------- | ---------------------------------------------------------------- |
-| `polygon` | `[[lon, lat], ...]` | yes      | Freeform ring, ≥3 vertices. Not required to be explicitly closed. |
+- `polygon`: `[[lon, lat], ...]`, at least 3 vertices, and it need not be explicitly closed.
+- `min_basin_depth_m`: optional per-request override of the server default.
 
-**Response `200 OK`:** a `PondPlanningResult`:
+**Response `200`: `PondPlanningResult`**
 
 ```json
 {
-  "source": "drawn area (~1.15 km², 256 elevation samples)",
+  "source": "drawn area (~1.15 km², 256 elevation samples, ~33 m spacing)",
   "contour_interval_m": 25.0,
   "elevation_range_m": [276.6, 551.6],
   "total_contours_parsed": 27,
   "closed_contours_used": 7,
   "candidate_basins_found": 1,
-  "recommended_site": { /* same BasinCandidate shape as /api/analyzeContour */ },
-  "alternative_sites": [ /* up to 5 more */ ],
+  "recommended_site": {
+    "rank": 1,
+    "site": { "lat": 21.2568, "lon": 81.3025 },
+    "pit_elevation_m": 280.0,
+    "catchment_boundary_elevation_m": 288.0,
+    "basin_depth_m": 8.0,
+    "pond_footprint_area_m2": 1292.7,
+    "catchment_area_m2": 27648.1,
+    "catchment_boundary_geojson": { "type": "Polygon", "coordinates": [[]] }
+  },
+  "alternative_sites": [],
   "pond_recommendation": {
     "annual_rainfall_m": 1.1,
     "rainfall_years_used": 10,
@@ -342,153 +311,451 @@ The Phase 3 entry point for the map's freeform draw tool: a polygon in, a full r
     "contour_extraction_ms": 41.2,
     "basin_analysis_ms": 6.8,
     "rainfall_lookup_ms": 340.1,
-    "pond_sizing_ms": 0.1
+    "pond_sizing_ms": 0.1,
+    "db_save_ms": 12.3
   }
 }
 ```
 
-`pond_recommendation` is `null` when no basin met `min_basin_depth_m`, or when the rainfall lookup failed (in which case `notes` explains why — basin/catchment info is still returned either way).
+`pond_recommendation` is `null` when no basin passed the depth filter or when the rainfall lookup failed. `notes` explains which.
 
-**Error responses:**
+### `POST /api/recommendPond`
 
-| Status | Meaning                                                                                  |
-| ------ | ----------------------------------------------------------------------------------------- |
-| `400`  | Polygon has fewer than 3 points, or the drawn area is outside `area_min_size_m2`/`area_max_size_km2` |
-| `422`  | Sampled terrain is too flat to contain a detectable basin                                 |
-| `502`  | The elevation or rainfall upstream API couldn't be reached or returned unusable data       |
+`multipart/form-data` with a `file` field (`.kml` or `.kmz`, max 25 MB). The response has the same shape as above. `source` is the filename, and `timings_ms` contains `kml_parse_ms` instead of the elevation and contour stages.
 
-## The catchment-detection algorithm
+```bash
+curl -X POST "http://10.1.75.79:3205/api/recommendPond" \
+  -F "file=@data/sample_contours/contours_1m.kml"
+```
 
-Full narrative version with rationale: [`docs/phase2_report.md`](docs/phase2_report.md#3-approach--how-catchment-estimation-works).
+### Error contract
 
-Phase 2's input is a set of **vector contour lines**, not a DEM raster — so rather than approximating a raster and running D8 flow-accumulation, the algorithm works directly on contour **topology**:
+| Status | Condition |
+|---|---|
+| `400` | Wrong file extension, fewer than 3 polygon points, or drawn area outside `[area_min_size_m2, area_max_size_km2]` |
+| `404` | Run id not found (`/api/runs/{id}`) |
+| `413` | Upload exceeds 25 MB |
+| `422` | KML has no usable contours, or sampled terrain is too flat (< 0.5 m relief) |
+| `502` | Elevation provider unreachable or returned unusable data |
 
-1. **Parse** the KML/KMZ into contour lines — each with an elevation and an ordered list of `(lon, lat)` points, flagged `closed` (a full ring) or `open` (clipped by the map boundary). Elevation is read from `<name>` first, falling back to common `ExtendedData` field names (`elevation`, `elev`, `height`, `contour`, `value`, `z`).
-2. **Build closed contour polygons.** Only closed rings can be tested for containment, so open (boundary-clipped) contours are excluded from basin detection — this is called out explicitly in the response `notes`.
-3. **Build a containment tree.** For every polygon, find its immediate parent: the smallest-area polygon (of any elevation) that fully contains it, using a `shapely.strtree.STRtree` spatial index instead of brute-force O(n²) containment checks.
-4. **Classify basins vs. hills.** A _leaf_ polygon (nothing nested inside it) whose parent sits at a **higher** elevation is the bottom of a natural depression — a basin. If the parent is at a **lower** elevation, the leaf is a hilltop and is discarded.
-5. **Delineate the catchment.** Starting at the pit, walk outward through parent rings while elevation keeps increasing. The walk stops at the first ring containing **more than one** nested basin — a drainage divide (saddle point) where two valleys meet — so it can't belong to a single catchment. The last valid ring before that point is the catchment boundary.
-6. **Rank candidates** by catchment area (descending), after filtering out basins shallower than `min_basin_depth_m` (default 2 m).
-7. **Rank 1 is the recommendation**; the response also returns up to 5 runner-ups.
+### Database service (internal)
 
-Area is computed with `pyproj.Geod.polygon_area_perimeter` directly on WGS84 lon/lat — this avoids both the distortion of computing area from raw degree coordinates and the need to guess a UTM zone for projection.
+Deployed at `http://10.1.75.79:4205`. It is called by the application server, not by browsers.
 
-**Generalization:** the KML parser doesn't depend on the sample file's specific folder structure (`lines`/`labels`) — it walks the whole document for the general `Placemark` → `LineString` → elevation pattern used by most contour-export tools (e.g. `gdal_contour`), and the contour interval is auto-detected from the data (most common gap between consecutive elevation levels) rather than assumed.
+| Method | Path | Purpose |
+|---|---|---|
+| `POST` | `/runs` | Insert a run, returns `{ok, id, created_at}` with `201` |
+| `GET` | `/runs?limit=&mode=` | Summary rows, newest first |
+| `GET` | `/runs/{run_id}` | Full row with deserialized `result` |
+| `GET` | `/health` | Liveness probe, includes DB file path |
 
-**Stated limitation:** this treats "catchment" as the area enclosed by contour rings, not a true hydrological watershed derived from slope/aspect on a raster surface. It's a defensible geometric approximation for reasonably dense contour data over hilly terrain (the sample map: 1 m interval, ~31 m of relief) but is less reliable on very flat terrain where contours are sparse.
+---
 
-## Freeform area analysis (elevation sampling → contours)
+## 8. Design Decisions and Trade-offs
 
-`/api/analyzeArea` (`app/core/area_contour_builder.py`) makes a drawn polygon usable by the same `ContourBasinAnalyzer` above, without a KML file:
+| Decision | Rationale | Trade-off accepted |
+|---|---|---|
+| **Contour topology, not raster D8** | Inputs are vector contours. Building a raster from them is lossy and slow, and the same logic serves both input modes. | Only fully closed depressions are detected (see [Known Limitations](#19-known-limitations)). |
+| **One shared pipeline for both inputs** | Zero duplicated logic. Features such as persistence apply to both routes automatically. | The pipeline signature is the integration seam for all future stages. |
+| **Spatial-indexed containment tree** | `STRtree` prunes candidates instead of O(n²) checks over up to about 1,300 rings. | Adds a Shapely dependency and index-build cost on small inputs. |
+| **Spacing-driven grid with a hard point cap** | Resolution follows area size while elevation-API cost stays bounded. | Very large areas are sampled coarser than the 30 m target. Coarser sampling can miss small basins. |
+| **Async I/O everywhere** (`httpx.AsyncClient`) | The event loop stays free while waiting on slow upstreams, which dominate latency. | Async-only code paths need `pytest.mark.anyio` in tests. |
+| **Separate DB service over HTTP** | Stateless app tier, swappable storage, isolated failure domain. | One extra network hop per save (measured as negligible). |
+| **SQLite + WAL** | Zero-ops, single-file, unlimited concurrent readers, and enough for a single writer at this write rate. | Single-node, single-writer. No built-in replication. |
+| **Non-fatal persistence and rainfall** | The user's answer matters more than its history entry or its sizing add-on. | Data can be silently missing from history when the DB is down. The response `notes` flag it. |
+| **Dependency injection for all outbound clients** | Tests substitute `httpx.MockTransport` at each boundary, so no live network is needed. | Slight indirection via `deps.py`. |
+| **Per-stage `timings_ms` in every response** | Real, reproducible performance data without separate benchmark tooling. | Small payload overhead. |
+| **Docker for local use only** | The lab hosts provide no container runtime. | Local images are not the production artifact (see [Containerization](#14-containerization)). |
 
-1. **Sample a regular grid** over the polygon's bounding box (padded by a small margin), sized by `area_max_grid_points` (default 256, clamped to a 9×9–20×20 side range).
-2. **Fetch elevation per grid point** from OpenTopoData (`ElevationService`), chunked to its request-size limit and rate-limited between chunks.
-3. **Fill gaps** (points with no DEM coverage — usually water) via nearest-neighbour interpolation (`scipy.interpolate.griddata`) so the grid is fully populated before contouring.
-4. **Choose a contour interval**: the sampled elevation range divided into `area_contour_levels` (default 15) target levels, snapped to a "nice" step (0.5 / 1 / 2 / 5 / 10 m, ...). An area with less than 0.5 m of sampled relief is rejected (`TerrainTooFlatError`, surfaced as a `422`) rather than producing meaningless contours.
-5. **Extract contours via marching squares** (`skimage.measure.find_contours`) at each level, mapping pixel (row, col) coordinates back to (lon, lat). A contour path that touches the sampled grid's edge is flagged `is_closed=False` — the same semantic as a KML contour clipped by the map boundary — so it's correctly excluded from basin containment.
-6. The resulting `ContourLine` list is handed to the same `ContourBasinAnalyzer.analyze()` Phase 2 already had — **no changes to the basin/catchment logic itself.**
+---
 
-**Stated limitation:** terrain is sampled over the polygon's *bounding box*, not clipped exactly to the hand-drawn outline, so the reported catchment can extend slightly past what was drawn (this is also stated in the response's `notes`). Grid resolution is fixed by `area_max_grid_points` regardless of the drawn area's shape, so a very elongated polygon samples less densely along its long axis than a square one of the same area — `area_max_size_km2` exists specifically to keep this from degrading too far.
+## 9. Reliability and Failure Modes
 
-## Phase 1 core modules (runoff & pond sizing) — now wired up
+| Dependency | Failure | Behaviour |
+|---|---|---|
+| OpenTopoData | Unreachable, HTTP error or bad JSON | `ElevationLookupError`, then HTTP **502**. Analysis cannot proceed without terrain. |
+| OpenTopoData | Some points have no DEM coverage | Filled by nearest-neighbour interpolation. If **all** are missing, HTTP 502. |
+| Terrain | Under 0.5 m of relief | `TerrainTooFlatError`, then HTTP **422** with guidance. |
+| Open-Meteo | Unreachable or no data | **Non-fatal.** Basin and catchment returned, `pond_recommendation = null`, and the reason is appended to `notes`. |
+| DB server | Unreachable on save | **Non-fatal.** `save_run` returns `None` after a 5 s timeout, a note is appended, and the full result is still returned. |
+| DB server | Unreachable on history read | `GET /api/runs*` return an error. The UI shows it inline, and the analysis flow is unaffected. |
+| Analysis result | No basin found | Valid result: zero candidates, a suggestion in `notes`, and the run is still persisted. |
 
-`RunoffCalculator` and `PondSizer` were fully built and unit-tested in Phase 1 but had no route wiring them up. Phase 3's `app/core/pond_pipeline.py` composes them onto the Phase 2 recommended basin, for both input modes:
+**Worst-case latency added by a dead database:** `db_save_timeout_s` (5 s) on each analysis.
 
-- **`RunoffCalculator`** (`app/core/runoff.py`) — turns `catchment_area_m2` + `annual_rainfall_m` + `runoff_coefficient` into an annual runoff volume, then applies a `capture_fraction` to get a design storage volume. Also exposes a rational-method `peak_flow_m3_per_s` helper.
-- **`PondSizer`** (`app/core/pond_sizing.py`) — turns a design storage volume + available surface area + `loss_factor` into a usable volume and a recommended pond depth, flagging infeasibility if the required depth falls outside a practical 0.5–4.0 m range.
-- **`RainfallService`** (`app/core/rainfall_service.py`, new in Phase 3) — supplies `annual_rainfall_m` automatically from Open-Meteo's historical archive for the recommended site, so no manual rainfall input is needed.
+---
 
-`/api/recommendPond` and `/api/analyzeArea` both return this as `pond_recommendation` in their response; it's `null` if no basin was found or the rainfall lookup failed (basin/catchment info is still returned either way, and `notes` explains what happened).
+## 10. Performance
 
-## Frontend application
+Measured from real `timings_ms` responses.
 
-A single-page React app (`frontend/src/App.jsx`) with a mode toggle between the two input paths, and five components:
+**Drawn-area run.** About 21.68 km² of real hilly terrain. The 1,024-point cap gave about 252 m spacing, against a 30 m target.
 
-- **Mode toggle** — "Draw area on map" (default) vs. "Upload KML / KMZ", switching which input control is shown and which endpoint gets called (`analyzeArea` vs. `recommendPond`).
-- **`FileUpload`** — drag-and-drop or click-to-browse picker, restricted to `.kml`/`.kmz`, used in KML mode.
-- **`ResultsSummary`** — parse-level stats: contour interval, elevation range, total/closed contour counts, candidate basin count, the backend's `notes` string, and (new) the per-step `timings_ms` breakdown.
-- **`PondRecommendationCard`** (new) — rainfall, runoff volume, storage volume, recommended depth, and feasibility verdict from `pond_recommendation`.
-- **`BasinList`** — scrollable, clickable ranked list of candidate sites (pit elevation, basin depth, pond footprint, catchment area), synced to map selection.
-- **`MapView`** — Leaflet map rendering every candidate's `catchment_boundary_geojson` as a colored polygon plus a pit marker, **plus** (in area mode) a [Leaflet-Geoman](https://geoman.io/leaflet-geoman) freeform polygon draw tool in the top-left, so the user's drawn area and the analysis results share one map instance. Clicking a polygon or list entry highlights the same site in both places, and the map auto-fits bounds to the returned catchments.
+| Stage | Time |
+|---|---|
+| Elevation fetch | 14,980 ms |
+| Contour extraction | 61 ms |
+| Basin analysis | 2.9 ms |
+| **Total** | **about 15.0 s** |
 
-Dark theme is implemented with CSS custom properties in `App.css` (`--bg`, `--panel`, `--accent`, etc.) rather than a UI framework, keeping the bundle small.
+Elevation lookup dominates by nearly two orders of magnitude. 1,024 points need about 11 sequential, rate-limited chunks (about 1 s each), which accounts for roughly 10–11 s of the observed 15 s. Computation is negligible by comparison.
 
-## Testing
+**KML run** (`contours_1m.kml`: 1,355 contours, 1,127 closed rings, 56 basins). Parsing plus basin analysis stays well under a second, with no external calls.
+
+**Optimization levers**, in order of expected payoff:
+
+1. Cache elevation tiles and per-coordinate rainfall. Rainfall changes at most yearly.
+2. Self-host an OpenTopoData instance to remove the rate limit.
+3. Raise the point cap or chunk concurrency only if the elevation source allows it.
+
+---
+
+## 11. Deployment Topology
+
+Services run on two lab-provided remote systems. Each is a Linux container reached over SSH, with no Docker access, no `systemd` and no root.
+
+**Port-mapping convention**
+
+```
+global_port = local_port + (SSH_port - 2000)
+```
+
+| Service | Host | Local port | Global URL |
+|---|---|---|---|
+| FastAPI application server | System 1 (SSH 2205) | 3000 | `http://10.1.75.79:3205` |
+| SQLite REST DB server | System 1 (SSH 2205) | 4000 | `http://10.1.75.79:4205` |
+| Static frontend (`npx serve`) | System 2 (SSH 2206) | 4000 | `http://10.1.75.79:4206` |
+
+Processes are managed with `nohup` and **PID files** under `backend/.pids/` and `frontend/.pids/`, driven by idempotent scripts in `scripts/`. Only ports 3000–8000 in steps of 1000 are allowed inside the systems.
+
+---
+
+## 12. Getting Started
+
+### Prerequisites
+
+- Python 3.10+ (CI and Docker use 3.12)
+- Node.js 18+ (CI and Docker use 20)
+- Optional: Docker and Docker Compose, for the containerized stack
+
+### Run locally (three terminals)
+
+**1. Database service**
+
+```bash
+cd backend
+python -m venv venv && source venv/bin/activate   # Windows: venv\Scripts\activate
+pip install -r requirements.txt
+SQLITE_DB_PATH=pond_runs.db DB_SERVER_PORT=4000 python app/db_server.py
+```
+
+**2. Application server**
+
+```bash
+cd backend
+source venv/bin/activate
+DB_SERVER_BASE_URL=http://localhost:4000 \
+  uvicorn app.main:app --reload --port 3000
+# Swagger UI: http://localhost:3000/docs
+```
+
+**3. Frontend**
+
+```bash
+cd frontend
+npm install
+echo "VITE_API_BASE_URL=http://localhost:3000" > .env
+npm run dev
+# http://localhost:5173
+```
+
+### Smoke test
+
+```bash
+curl http://localhost:3000/health
+curl http://localhost:4000/health
+curl -X POST http://localhost:3000/api/recommendPond \
+     -F "file=@data/sample_contours/contours_1m.kml"
+curl http://localhost:3000/api/runs
+```
+
+> The database service defaults to port `5000` when `DB_SERVER_PORT` is unset. The deployed and Compose setups both set it to `4000` explicitly.
+
+---
+
+## 13. Configuration
+
+All backend settings live in `backend/app/config.py` (`pydantic-settings`). Override any of them through environment variables (case-insensitive) or `backend/.env`.
+
+| Setting | Default | Purpose |
+|---|---|---|
+| `db_server_base_url` | `http://10.1.75.79:4205` | Base URL of the DB service. Inside Docker Compose it is `http://db-server:4000`. |
+| `db_save_timeout_s` | `5.0` | Timeout for persistence calls |
+| `open_meteo_base_url` | `https://archive-api.open-meteo.com/v1/archive` | Rainfall source |
+| `elevation_api_base_url` | `https://api.opentopodata.org/v1/srtm30m` | Elevation source |
+| `rainfall_years` | `10` | Years of history averaged |
+| `default_runoff_coefficient` | `0.3` | Runoff model input |
+| `default_capture_fraction` | `0.2` | Runoff model input |
+| `default_loss_factor` | `0.15` | Pond sizing input |
+| `min_basin_depth_m` | `2.0` | Minimum depth for a basin to count as real, not noise |
+| `area_target_spacing_m` | `30.0` | Target ground spacing between elevation samples |
+| `area_grid_min_side` / `area_grid_max_side` | `9` / `80` | Grid side clamp |
+| `area_max_grid_points` | `1024` | Hard ceiling on samples per request (bounds latency and API cost) |
+| `area_contour_levels` | `15` | Target number of contour levels |
+| `area_min_size_m2` / `area_max_size_km2` | `500` / `500` | Sanity bounds on drawn area |
+| `elevation_chunk_size` | `100` | Points per OpenTopoData request |
+| `elevation_request_delay_s` | `1.0` | Delay between elevation chunks |
+
+**DB service environment:** `SQLITE_DB_PATH` (default `pond_runs.db`) and `DB_SERVER_PORT` (default `5000`).
+**Frontend build-time:** `VITE_API_BASE_URL`, inlined into the bundle by Vite. Changing it requires a rebuild.
+
+---
+
+## 14. Containerization
+
+Docker is used for **local development and reproducibility**. The lab hosts have no container runtime, so the running deployment uses the bare-metal path in [Deployment Topology](#11-deployment-topology).
+
+| Artifact | Details |
+|---|---|
+| `backend/Dockerfile` | Multi-stage. A `python:3.12-slim` builder installs dependencies into a venv, and a slim **non-root** runtime copies only the venv and app code. Includes a `HEALTHCHECK`. |
+| Backend and DB service | **One image, two commands.** The default command runs uvicorn, and Compose overrides it with `python app/db_server.py` for the DB service. |
+| `frontend/Dockerfile` | `node:20-alpine` builds the Vite bundle. `nginx-unprivileged` serves it on 8080 with an SPA fallback and a `/health` route. |
+| `docker-compose.yml` | Three services on a private bridge network (`pond-net`), CPU and memory limits, rotated JSON logs, health-gated startup (`depends_on: service_healthy`), and a named volume `db-data` for the SQLite file. |
+
+Inside Compose, the backend reaches the DB service at `http://db-server:4000` over the internal network, never through a host port.
+
+**Run the stack**
+
+```bash
+# .env at the repository root
+cat > .env <<'EOF'
+LOCAL_BACKEND_PORT=3000
+LOCAL_DB_PORT=4000
+LOCAL_FRONTEND_PORT=5000
+EOF
+
+docker compose up -d --build
+docker compose ps
+curl http://localhost:3000/health   # backend
+curl http://localhost:4000/health   # db-server
+curl http://localhost:5000/         # frontend
+```
+
+Stop without losing data with `docker compose down`. Never use `-v`, which deletes the `db-data` volume.
+
+> The containerized frontend uses **nginx**, while the remote deployment uses **`npx serve`**. Both serve the same Vite build output. `serve` needs no extra install on a Docker-less host.
+
+---
+
+## 15. CI/CD Pipeline
+
+| Workflow | Trigger | Action |
+|---|---|---|
+| `backend-ci.yml` | PR or push touching `backend/**` | Install dependencies, run `pytest` |
+| `frontend-ci.yml` | PR or push touching `frontend/**` | `npm ci`, `npm run build` |
+| `docker-build.yml` | PR or push touching `backend/**` or `docker-compose.yml` | Build the backend image (build-only, never pushed) |
+| `deploy-backend.yml` | Push to `main` or manual dispatch | Re-run tests as a deploy gate, SSH to system 1, run `scripts/remote_deploy.sh` |
+| `deploy-frontend.yml` | Push to `main` or manual dispatch | Re-run the build as a gate, SSH to system 2, run `scripts/remote_deploy_frontend.sh` |
+
+**Deploy scripts** (idempotent, PID-file based):
+
+1. `git fetch` and `git reset --hard origin/main`, so the remote mirrors `main` exactly. Do not hand-edit files on the remote.
+2. Reinstall dependencies (`pip install` or `npm ci`) and rebuild the bundle for the frontend.
+3. Stop the previous process from its PID file (SIGTERM, then SIGKILL after 2 s).
+4. Start the new process with `nohup`, record its PID, and write logs to `*.log`.
+5. Health-check the service and fail the run if it does not respond.
+
+**Required repository secrets** (Settings → Secrets and variables → Actions → *Repository secrets*)
+
+| Backend | Frontend |
+|---|---|
+| `SSH_HOST`, `SSH_PORT`, `SSH_USER`, `SSH_PRIVATE_KEY`, `REMOTE_APP_DIR` | `FRONTEND_SSH_HOST`, `FRONTEND_SSH_PORT`, `FRONTEND_SSH_USER`, `FRONTEND_SSH_PRIVATE_KEY`, `FRONTEND_REMOTE_APP_DIR` |
+
+Use a **dedicated deploy keypair** for CI, authorized in `~/.ssh/authorized_keys` on each host. Never reuse a personal key.
+
+> **Network constraint on CD.** The lab systems are reachable only from inside the lab network. GitHub-hosted runners cannot open an SSH connection to `10.1.75.79`, so the deploy workflows fail with a TCP dial timeout before authentication. CI is unaffected. Deployments are performed by running the same `scripts/remote_deploy*.sh` scripts manually over SSH. The workflows work unmodified from a **self-hosted runner inside the lab network**, or through a public bastion host.
+
+---
+
+## 16. Operations Runbook
+
+### Deploy or redeploy (manual)
+
+```bash
+# System 1: backend and DB service
+ssh -p 2205 <user>@10.1.75.79
+bash <repo>/scripts/remote_deploy.sh <repo>
+
+# System 2: frontend
+ssh -p 2206 <user>@10.1.75.79
+bash <repo>/scripts/remote_deploy_frontend.sh <repo>
+```
+
+### Health checks
+
+```bash
+curl http://10.1.75.79:3205/health   # application server
+curl http://10.1.75.79:4205/health   # DB service
+curl -I http://10.1.75.79:4206/      # frontend
+```
+
+### Logs and process control
+
+```bash
+tail -f backend/backend.log backend/db_server.log frontend/frontend.log
+cat backend/.pids/backend.pid backend/.pids/db_server.pid
+kill "$(cat backend/.pids/backend.pid)"   # then re-run the deploy script
+```
+
+### Backing up the database
+
+Use SQLite's online backup, which is safe while the service is running. A plain `cp` of the file is not safe in WAL mode.
+
+```bash
+sqlite3 backend/pond_runs.db ".backup 'pond_runs.$(date +%F).bak'"
+```
+
+### Troubleshooting
+
+| Symptom | Likely cause | Action |
+|---|---|---|
+| Result notes say "Could not persist this run" | DB service down or `db_server_base_url` wrong | Check `:4205/health` and `db_server.log`, then redeploy |
+| History panel shows an error | Same as above | Same as above. Analyses still work |
+| HTTP 502 on `analyzeArea` | OpenTopoData rate limit or outage | Retry, or draw a smaller area (fewer chunks) |
+| HTTP 422 "too flat" | Under 0.5 m of relief in the sampled box | Draw a larger or hillier area |
+| "No basin found" | Drainage through open valleys, or the depth filter is too strict | Lower *Min basin depth* in the UI. See [Known Limitations](#19-known-limitations) |
+| UI cannot reach the API | `VITE_API_BASE_URL` was wrong at build time | Fix it and rebuild the frontend |
+| Compose fails pulling images | Registry or network issue on the host | Retry, and check `docker pull python:3.12-slim` separately |
+
+---
+
+## 17. Testing Strategy
 
 ```bash
 cd backend
 PYTHONPATH=. pytest tests/ -v
 ```
 
-**28 tests, all passing:**
+**34 tests**, no live network required. Async tests use `pytest.mark.anyio`.
 
-- **7** for the Phase 2 contour/basin logic (`test_contour_analysis.py`), run against small synthetic KML fixtures built in-test (not the large sample file, so they execute in milliseconds):
-  - Parses closed contour lines correctly
-  - Rejects a file with no usable contours
-  - Detects a single nested basin with the correct catchment boundary
-  - Correctly rejects a hill (elevation increasing inward) as a non-basin
-  - Correctly stops the catchment walk-up at a saddle point shared by two basins
-  - Respects `min_basin_depth_m` filtering
-  - Ranks basins by catchment area, descending
-- **5** carried over from Phase 1 (`test_runoff.py`, `test_pond_sizing.py`) covering `RunoffCalculator` and `PondSizer`.
-- **6** for the elevation and rainfall services (`test_elevation_service.py`, `test_rainfall_service.py`), each against an injected `httpx.MockTransport` rather than the real network — chunking/ordering, missing-data handling, and HTTP-error propagation.
-- **6** for the area-to-contour pipeline (`test_area_contour_builder.py`) — grid sizing/clamping, missing-elevation interpolation, the flat-terrain rejection, and a synthetic paraboloid "bowl" surface that must produce a closed contour near its minimum.
-- **3** for the composed pipeline (`test_pond_pipeline.py`) — a found basin producing a full `pond_recommendation` with all timing keys present, graceful degradation when the rainfall lookup fails (basin data still returned), and no rainfall lookup being attempted when no basin was found at all.
+| Suite | Tests | Focus |
+|---|---|---|
+| `test_contour_analysis.py` | 7 | KML parsing. Nested basin, hill rejection, saddle-point stop and depth filtering. Ranking. |
+| `test_area_contour_builder.py` | 6 | Grid clamping, gap interpolation, flat-terrain rejection, and a synthetic paraboloid that must yield a closed contour |
+| `test_elevation_service.py` | 4 | Chunking and order, empty input, HTTP errors, missing points |
+| `test_rainfall_service.py` | 3 | Multi-year averaging, missing data, HTTP errors |
+| `test_run_store.py` | 6 | Save, list, filter and get. Save returns `None` on failure. 404 maps to `RunStoreError`. |
+| `test_pond_pipeline.py` | 3 | Full composition, rainfall-failure degradation, no-basin path. Each asserts what was persisted. |
+| `test_runoff.py`, `test_pond_sizing.py` | 5 | Worked examples, invalid input, feasibility bounds |
 
-Async tests use `pytest.mark.anyio` (see `tests/conftest.py`); no real network calls are made by the test suite.
+**Approach.** Synthetic fixtures with known ground truth verify the algorithm deterministically. `httpx.MockTransport` and an in-memory `_FakeRunStore` isolate every network boundary.
 
-## Demonstration
+---
 
-Run against the provided sample map, `data/sample_contours/contours_1m.kml`:
+## 18. Security Posture
 
-| Metric                               | Value       |
-| ------------------------------------ | ----------- |
-| Contour lines parsed                 | 1,355       |
-| Closed contours used                 | 1,127       |
-| Contour interval (auto-detected)     | 1 m         |
-| Elevation range                      | 267 – 298 m |
-| Candidate basins found (depth ≥ 2 m) | 56          |
+This is a lab and demonstration deployment. It is **not hardened for public production**.
 
-**Recommended site (Rank 1):**
+| Area | Current state | Production recommendation |
+|---|---|---|
+| Authentication | None (single-tenant, no user data) | OIDC or API keys at the edge |
+| CORS | `allow_origins=["*"]` | Restrict to the frontend origin |
+| DB service | Unauthenticated, on a globally mapped port | Bind to a private interface, or require a shared secret, and stop exposing it |
+| Transport | Plain HTTP | TLS termination at a reverse proxy |
+| Input limits | 25 MB uploads, polygon area bounds, point cap | Add rate limiting per client |
+| Secrets | SSH deploy keys held in GitHub Secrets only | Rotate periodically. Use a dedicated key |
+| Containers | Non-root runtime users, resource limits | Add image scanning to CI |
 
-| Field                        | Value                      |
-| ---------------------------- | -------------------------- |
-| Location                     | 21.256846° N, 81.302578° E |
-| Pit elevation                | 280 m                      |
-| Catchment boundary elevation | 288 m                      |
-| Basin depth                  | 8 m                        |
-| Pond footprint area          | 1,292.7 m²                 |
-| Catchment area               | 27,648.1 m² (~2.76 ha)     |
+---
 
-**Top 5 alternative sites:**
+## 19. Known Limitations
 
-| Rank | Pit elev. | Catchment elev. | Depth | Catchment area |
-| ---- | --------- | --------------- | ----- | -------------- |
-| 2    | 267 m     | 272 m           | 5 m   | 25,708 m²      |
-| 3    | 278 m     | 280 m           | 2 m   | 23,525 m²      |
-| 4    | 283 m     | 287 m           | 4 m   | 22,955 m²      |
-| 5    | 277 m     | 280 m           | 3 m   | 22,106 m²      |
+- **Only closed depressions are detected.** Real terrain mostly drains through open valleys, so a large hilly area can legitimately return zero basins. This is a consequence of working on contour topology. It is the single largest algorithmic gap. A D8 or D-infinity flow-accumulation fallback over the same sampled grid is the natural fix.
+- **Catchments are contour-enclosed areas, not true watersheds.** They are a good approximation on dense contours over hilly terrain and weaker on flat terrain.
+- **Drawn areas are analyzed over their bounding box**, not clipped to the outline, so a catchment can extend slightly past what was drawn.
+- **Elevation resolution is capped** for latency and API-cost reasons. Large areas are sampled coarser than 30 m and can miss small basins.
+- **Rainfall is averaged over the configured number of years**, not over the days returned. Gaps in the archive slightly under-count.
+- **History reads depend on the DB service** and return an error if it is down. Saves are non-fatal, reads are not.
+- **The DB service is single-node, single-writer**, with one process-wide connection and no retention policy or built-in backup.
+- **Automated CD is blocked** by the lab network's lack of public reachability from GitHub-hosted runners.
+- **No caching, load balancing or authentication.** These are deliberate scope decisions.
 
-## Known limitations
+---
 
-- **Not a true hydrological watershed.** Catchments are the area enclosed by contour rings, not a slope/aspect-derived drainage basin — an acceptable approximation on hilly terrain with reasonably dense contours, weaker on flat terrain with sparse contours.
-- **Open (boundary-clipped) contours are excluded** from basin detection, since containment can't be determined for a ring that doesn't close. This can under-count basins near the edge of a survey area or a sampled bounding box; the response `notes` field states how many contours were excluded this way.
-- **Drawn areas are analyzed over their bounding box**, not clipped exactly to the hand-drawn outline — the reported catchment can extend slightly past what was drawn (also stated in `notes`).
-- **Elevation-grid resolution is capped** (`area_max_grid_points`, default 256) to bound the number of OpenTopoData calls per request — a coarser grid finds fewer/less-precise basins than the 1m-interval KML sample file does. Larger drawn areas get proportionally coarser sampling, which is why `area_max_size_km2` exists.
-- **Rainfall averaging assumes complete daily data** for the requested years — a location with data gaps in Open-Meteo's archive will slightly under-count its annual total (the total is divided by the full year count, not the count of days actually returned).
-- **CORS is fully open** (`allow_origins=["*"]`) — fine for a lab/demo deployment, not intended for production as-is.
-- **No persistence layer is active** — `database_url` is configured but no models/migrations exist yet; results are computed per-request and not stored. `timings_ms` on every response is the current substitute for a stored performance history.
-- **Single backend instance, no load balancing** — deliberate for now; the pipeline is stateless (no in-memory session or metrics store) specifically so this can be split across multiple instances later without a code change.
+## 20. Scaling Path and Roadmap
 
-## Roadmap
+**How the system scales, given the current design**
 
-- ~~Wire a route that composes contour analysis → `RunoffCalculator` → `PondSizer` into one call~~ — done (`/api/recommendPond`, `/api/analyzeArea`, `app/core/pond_pipeline.py`).
-- ~~Pull historical rainfall automatically from the site's coordinates instead of requiring `annual_rainfall_m` as manual input~~ — done (`RainfallService`).
-- ~~Add elevation lookup for sites without a contour map~~ — done (`ElevationService` + `area_contour_builder.py`, via `/api/analyzeArea`).
-- Persist analysis runs (drawn area / source file, chosen basin, pond recommendation) via the reserved `database_url`, so past requests don't need to be re-run for the report.
-- Clip the sampled/generated contours to the exact hand-drawn polygon rather than its bounding box.
-- Load-balance the backend across the course's allocated systems once the single-instance deployment needs to scale (the pipeline is already stateless to allow this).
+1. **Horizontal app tier.** The application server is stateless, so run N replicas behind a load balancer. Nothing else changes.
+2. **Storage tier.** Because persistence goes through the `RunStore` interface, replace the SQLite service with PostgreSQL behind the same three operations. `pond_pipeline.py` needs no change.
+3. **Latency tier.** Add a cache in front of `ElevationService` and `RainfallService`, keyed by rounded coordinates. This removes the dominant cost on repeat areas.
+4. **Async job model.** For very large areas, return `202 Accepted` with a job id and let the client poll or subscribe, instead of holding a 15 s request open.
 
-## License
+**Roadmap**
 
-MIT — see [`LICENSE`](LICENSE). Copyright (c) 2026 Ashutosh Kumar Jha.
+- [ ] Flow-accumulation fallback for open-valley terrain
+- [ ] Clip sampled contours to the exact drawn outline
+- [ ] Elevation and rainfall caching layer
+- [ ] Authentication, restricted CORS and TLS termination
+- [ ] Retention policy and scheduled backups for the run store
+- [ ] Self-hosted GitHub Actions runner to enable automated CD
+- [ ] Load test and published concurrency limits
+
+---
+
+## 21. Repository Layout
+
+```
+.
+├── backend/
+│   ├── app/
+│   │   ├── api/
+│   │   │   ├── area.py                 POST /api/analyzeArea
+│   │   │   ├── contour.py              /api/analyzeContour, /findCatchment, /recommendPond
+│   │   │   ├── runs.py                 GET /api/runs, /api/runs/{id}
+│   │   │   └── deps.py                 dependency providers (DI wiring)
+│   │   ├── core/
+│   │   │   ├── kml_parser.py           KML/KMZ to ContourLine[]
+│   │   │   ├── area_contour_builder.py grid sampling, gap fill, marching squares
+│   │   │   ├── contour_basin_analyzer.py containment tree, basins, catchments
+│   │   │   ├── elevation_service.py    OpenTopoData client (chunked, rate-limited)
+│   │   │   ├── rainfall_service.py     Open-Meteo client
+│   │   │   ├── runoff.py               RunoffCalculator
+│   │   │   ├── pond_sizing.py          PondSizer
+│   │   │   ├── pond_pipeline.py        orchestration and per-stage timing
+│   │   │   ├── run_store.py            async client for the DB service
+│   │   │   └── geo_utils.py            geodesic area
+│   │   ├── db_server.py                standalone SQLite REST service
+│   │   ├── main.py                     app, CORS, router registration
+│   │   ├── config.py                   pydantic-settings
+│   │   └── schemas.py                  request/response contracts
+│   ├── tests/                          34 tests
+│   ├── Dockerfile
+│   ├── .dockerignore
+│   └── requirements.txt
+├── frontend/
+│   ├── src/
+│   │   ├── api.js                      fetch client
+│   │   ├── App.jsx, App.css            layout, dark theme
+│   │   └── components/                 MapView, FileUpload, ResultsSummary,
+│   │                                   BasinList, PondRecommendationCard, RunHistory
+│   ├── Dockerfile, nginx.conf, .dockerignore
+│   ├── vite.config.js
+│   └── package.json
+├── scripts/
+│   ├── remote_deploy.sh                backend and DB deploy (PID-file based)
+│   └── remote_deploy_frontend.sh       frontend build and serve
+├── .github/workflows/                  backend-ci, frontend-ci, docker-build,
+│                                       deploy-backend, deploy-frontend
+├── data/sample_contours/contours_1m.kml
+├── docs/                               design write-ups
+├── docker-compose.yml
+├── LICENSE
+└── README.md
+```
+
+---
+
+## 22. License
+
+MIT. See [`LICENSE`](LICENSE). Copyright (c) 2026 Ashutosh Kumar Jha.
