@@ -3,8 +3,10 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import area, contour, runs
 from app.config import settings
+from app.telemetry import setup_telemetry
 
 app = FastAPI(title=settings.app_name)
+setup_telemetry("pond-api", app)
 
 app.add_middleware(
     CORSMiddleware,
