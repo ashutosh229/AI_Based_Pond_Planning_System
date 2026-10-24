@@ -78,7 +78,15 @@ def _init_schema() -> None:
     print(f"[db_server] SQLite database ready: {os.path.abspath(DB_PATH)}")
 
 
+try:
+    from app.telemetry import setup_telemetry
+except ImportError:
+    from telemetry import setup_telemetry
+from opentelemetry.instrumentation.sqlite3 import SQLite3Instrumentor
+
 app = FastAPI(title="Pond Planning DB Server", version="1.0")
+SQLite3Instrumentor().instrument()  # must run before sqlite3.connect()
+setup_telemetry("pond-db", app)
 
 
 class RunIn(BaseModel):
