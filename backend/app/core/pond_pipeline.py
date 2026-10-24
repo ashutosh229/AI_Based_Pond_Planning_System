@@ -41,20 +41,40 @@ from app.schemas import (
     PondRecommendation,
 )
 
+import logging
+from opentelemetry import metrics, trace
+
+logger = logging.getLogger("pond.pipeline")
+tracer = trace.get_tracer("pond.pipeline")
+meter = metrics.get_meter("pond.pipeline")
+
+stage_duration = meter.create_histogram(
+    "pond.stage.duration", unit="ms", description="Duration of each pipeline stage"
+)
+analyses_total = meter.create_counter("pond.analyses", description="Completed analyses")
+basins_found = meter.create_histogram(
+    "pond.basins.found", description="Candidate basins per analysis"
+)
+dependency_failures = meter.create_counter(
+    "pond.dependency.failures", description="Non-fatal dependency failures"
+)
+
 
 class Timer:
-    """Accumulates named step durations (milliseconds) for one request."""
-
     def __init__(self):
         self.timings_ms: dict[str, float] = {}
 
     @contextmanager
     def measure(self, label: str):
+        stage = label.removesuffix("_ms")
         start = time.perf_counter()
-        try:
-            yield
-        finally:
-            self.timings_ms[label] = round((time.perf_counter() - start) * 1000, 2)
+        with tracer.start_as_current_span(f"pipeline.{stage}"):
+            try:
+                yield
+            finally:
+                elapsed = (time.perf_counter() - start) * 1000
+                self.timings_ms[label] = round(elapsed, 2)
+                stage_duration.record(elapsed, {"stage": stage})
 
 
 def basin_to_candidate(rank: int, basin: Basin) -> BasinCandidate:
@@ -136,6 +156,9 @@ async def run_pond_pipeline(
                 )
             except RainfallLookupError as exc:
                 notes += f" Rainfall lookup failed ({exc}); pond sizing skipped."
+                dependency_failures.add(1, {"dependency": "open-meteo"})
+                trace.get_current_span().record_exception(exc)
+                logger.warning("Rainfall lookup failed: %s", exc)
 
         if rainfall is not None:
             with timer.measure("pond_sizing_ms"):
@@ -208,6 +231,19 @@ async def run_pond_pipeline(
 
     if run_id is None:
         notes += " (Could not persist this run — DB server unreachable.)"
+    dependency_failures.add(1, {"dependency": "db-server"})
+    logger.warning("Could not persist run (DB server unreachable)")
+
+    span = trace.get_current_span()
+    span.set_attribute("pond.mode", mode)
+    span.set_attribute("pond.basins_found", len(candidates))
+    if recommended:
+        span.set_attribute("pond.catchment_area_m2", recommended.catchment_area_m2)
+    analyses_total.add(1, {"mode": mode, "basin_found": recommended is not None})
+    basins_found.record(len(candidates), {"mode": mode})
+    logger.info(
+        "analysis done mode=%s source=%s basins=%d", mode, source_label, len(candidates)
+    )
 
     return PondPlanningResult(
         source=source_label,
